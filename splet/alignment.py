@@ -43,11 +43,20 @@ Two backends compute the alignment:
     weighted model, so it is available only with ``costs="unit"`` and says
     so rather than silently returning a different split.
 
-Not implemented: sclite's ``@`` token, which it charges 0.001 to insert or
-delete and excludes from the tally altogether -- ``a @ b`` against ``a @ b``
-scores 2 correct, not 3. That is a scoring-layer exclusion rather than a
-cost, ESPnet's tokenizers do not emit it, and a half-characterised special
-case is worse than a documented absence.
+Two things sclite does that this does not, listed because an absence nobody
+wrote down is indistinguishable from a bug:
+
+``@``
+    sclite charges 0.001 to insert or delete it and excludes it from the
+    tally altogether -- ``a @ b`` against ``a @ b`` scores 2 correct, not 3.
+    That is a scoring-layer exclusion rather than a cost, ESPnet's tokenizers
+    do not emit it, and a half-characterised special case is worse than a
+    documented absence.
+``-F``
+    Score word fragments as correct. One recipe in egs2 passes it,
+    ``dynamic_superb/ps2st1/local/score.sh``. Scoring that recipe through
+    SPLET would report a number slightly worse than its published one, so
+    either implement this or do not use SPLET for it.
 """
 
 from __future__ import annotations

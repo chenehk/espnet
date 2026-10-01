@@ -165,7 +165,9 @@ class BaseErrorRate(BaseMetric):
             deletions += alignment.deletions
             insertions += alignment.insertions
             hits += alignment.hits
-            rendered.append(f"{utt_id}\n{alignment.to_string()}\n")
+            # Only utterances with an error.
+            if alignment.errors:
+                rendered.append(f"{utt_id}\n{alignment.to_string()}\n")
 
         test_dir = Path(inference_dir) / test_name
         test_dir.mkdir(parents=True, exist_ok=True)
