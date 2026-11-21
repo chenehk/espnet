@@ -1,0 +1,48 @@
+defaults:
+  - ../../config
+  - _self_
+
+# Every value here is read by builder.py or dataset.py.
+
+# The annotation's own split column; it also carries "test" and "invalid",
+# which OWSM does not prepare.
+splits:
+  - dev
+  - train
+
+builder:
+  source_env_var: VOXPOPULI
+  # The 16 languages with ASR annotations. Upstream downloads each
+  # asr_<lang>.tsv.gz from dl.fbaipublicfiles.com; they ship in the corpus
+  # under transcribed_data/<lang>/, so nothing here needs the network.
+  asr_languages:
+    - en
+    - de
+    - fr
+    - es
+    - pl
+    - it
+    - ro
+    - hu
+    - cs
+    - nl
+    - fi
+    - hr
+    - sk
+    - sl
+    - et
+    - lt
+  # Only these three have human reference translations, so only they can be
+  # used for supervised ST.
+  st_target_languages:
+    - en
+    - fr
+    - es
+  audio:
+    read_headers: false
+
+dataset:
+  # Opens every utterance id. Fixed by the published OWSM data.
+  prefix: VoxPopuli
+  # No lang: the source language varies by row, so each row carries its own.
+  cache_subdir: voxpopuli
