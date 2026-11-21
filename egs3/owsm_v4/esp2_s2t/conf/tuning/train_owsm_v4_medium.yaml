@@ -1,4 +1,4 @@
-# OWSM v4 medium (1B) on SPGISpeech + MuST-C v1.2.
+# OWSM v4 medium (1B) on LibriSpeech + VoxPopuli.
 #
 # Defaults come from egs3/TEMPLATE/esp2_s2t/conf/training.yaml; this file supplies
 # the corpora and the mixture.
@@ -13,32 +13,32 @@
 # a recipe-local copy, matching how the other recipes lay out a corpus.
 create_dataset:
   corpora:
-    spgispeech:
-      source_dir: ${oc.env:SPGISPEECH,${recipe_dir}/download/spgispeech}
-    must_c:
-      source_dir: ${oc.env:MUST_C,${recipe_dir}/download/must_c}
+    librispeech:
+      source_dir: ${oc.env:LIBRISPEECH,${recipe_dir}/download/librispeech}
+    voxpopuli:
+      source_dir: ${oc.env:VOXPOPULI,${recipe_dir}/download/voxpopuli}
 
 # Entries are POSITIONAL -- see the banner in the template. Append; do not
 # reorder, or every shape key after the change is invalidated.
 dataset:
   train:
-    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.spgispeech
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.librispeech
       data_src_args:
         split: train
         recipe_dir: ${recipe_dir}
         cache: ${cache}
-    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.must_c
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.voxpopuli
       data_src_args:
         split: train
         recipe_dir: ${recipe_dir}
         cache: ${cache}
   valid:
-    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.spgispeech
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.librispeech
       data_src_args:
-        split: val
+        split: dev
         recipe_dir: ${recipe_dir}
         cache: ${cache}
-    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.must_c
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.voxpopuli
       data_src_args:
         split: dev
         recipe_dir: ${recipe_dir}
@@ -84,8 +84,8 @@ tokenizer:
     recipe_dir: ${recipe_dir}
     cache: ${cache}
     entries:
-      - {corpus: spgispeech, split: train}
-      - {corpus: must_c_v1.2, split: train}
+      - {corpus: librispeech, split: train}
+      - {corpus: voxpopuli, split: train}
 
 # egs2 trains with AdamW and a piecewise warmup; the template sets no
 # scheduler, so both are stated here in full.

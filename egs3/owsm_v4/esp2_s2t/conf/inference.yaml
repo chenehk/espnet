@@ -1,4 +1,4 @@
-# Decoding SPGISpeech val + MuST-C v1.2 dev.
+# Decoding LibriSpeech dev + VoxPopuli dev.
 #
 # Defaults come from egs3/TEMPLATE/esp2_s2t/conf/inference.yaml.
 
@@ -21,16 +21,16 @@ cache:
 # set would be decoded as whatever task the checkpoint defaults to.
 dataset:
   test:
-    - name: spgispeech_val
-      data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.spgispeech
+    - name: librispeech_dev
+      data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.librispeech
       data_src_args:
-        split: val
+        split: dev
         recipe_dir: ${recipe_dir}
         cache: ${cache}
       transform:
         _target_: egs3.owsm_v4.esp2_s2t.dataset.dataset.PromptFromTags
-    - name: must_c_dev
-      data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.must_c
+    - name: voxpopuli_dev
+      data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.voxpopuli
       data_src_args:
         split: dev
         recipe_dir: ${recipe_dir}
