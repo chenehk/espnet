@@ -1,0 +1,30 @@
+defaults:
+  - ../../config
+  - _self_
+
+# Every value here is read by builder.py or dataset.py.
+
+# The corpus ships a test split too; OWSM prepares only these two
+# (egs2/owsm_v1/s2t1/local/prepare_aishell.sh).
+splits:
+  - dev
+  - train
+
+builder:
+  source_env_var: AISHELL
+  # The corpus is uniform 16 kHz mono 16-bit PCM, so the size on disk gives the
+  # duration; upstream's librosa.get_duration(filename=...) no longer exists in
+  # librosa >= 0.10. Confirmed exact against soundfile headers. bytes_per_second
+  # already assumes expected_fs, so a file at another rate gets a wrong duration
+  # as well as wrong features -- only read_headers catches it.
+  audio:
+    header_bytes: 44
+    bytes_per_second: 32000
+    read_headers: false
+
+dataset:
+  # Opens every utterance id. Fixed by the published OWSM data.
+  prefix: AISHELL-1
+  lang: zh
+  task: asr
+  cache_subdir: aishell_1
