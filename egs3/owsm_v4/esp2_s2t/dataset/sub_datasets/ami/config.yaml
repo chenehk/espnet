@@ -1,0 +1,216 @@
+defaults:
+  - ../../config
+  - _self_
+
+# Every value here is read by builder.py or dataset.py.
+
+# egs2/owsm_v3/s2t1/local/prepare_ami.sh converts ihm_train, ihm_dev and
+# ihm_eval; the published dump carries only the first two.
+splits:
+  - dev
+  - train
+
+builder:
+  source_env_var: AMI
+  # <root>/<meeting>/audio/ holds the recordings and <root>/annotations/ the
+  # unpacked ami_public_manual_1.6.1.zip that local/ami_text_prep.sh
+  # downloads. Headset-<n> is the ihm microphone, the default of
+  # egs2/ami/asr1/local/data.sh; sdm/mdm would need beamforming first.
+  annotations_subdir: annotations
+  audio_template: "{meeting}/audio/{meeting}.Headset-{channel}.wav"
+
+  # local/ami_ihm_data_prep.sh names each recording AMI_<meeting>_H0<channel>,
+  # and kaldi_to_whisper.py then prepends --prefix AMI to it, so every OWSM
+  # utterance id carries "AMI" twice.
+  recording_prefix: AMI
+
+  # One header read per recording, 687 in all. Not optional in practice: 683
+  # headset files are 16 kHz mono PCM_16 but ES2010d's four are stereo (two
+  # identical channels), which the read path would hand to the frontend as a
+  # two-channel span, so those four become failures and the dump's 100
+  # ES2010d rows are not reproduced. The dump's audio for them is unusable
+  # anyway: `sox -c 1 -t wavpcm <file>` overrides a stereo header instead of
+  # downmixing, so its ES2010d spans were cut from a half-speed timeline --
+  # in the dump's own ark, x[::2] of a span correlates 1.00000 with the raw
+  # file at half the offset.
+  read_headers: true
+
+  # s2t.sh stage 4 keeps a dumped utterance only if it is longer than
+  # min_wav_duration, so a packed span at or under this never reached the
+  # published data. Three dev spans of 0.10, 0.10 and 0.09 s depend on it.
+  min_duration: 0.1
+
+  # local/ami_split_segments.pl cuts a transcriber segment at every `.` or `?`
+  # and, when a piece still has more than this many words, recursively at the
+  # comma nearest its midpoint.
+  max_words_per_segment: 30
+
+  # local/split_{dev,train}.orig verbatim. The corpus metadata cannot stand in
+  # for them: meetings.xml marks 20 meetings "development" and 98 "training",
+  # and 53 carry no seen_type at all.
+  meetings:
+    dev:
+      - ES2011a
+      - ES2011b
+      - ES2011c
+      - ES2011d
+      - IB4001
+      - IB4002
+      - IB4003
+      - IB4004
+      - IB4010
+      - IB4011
+      - IS1008a
+      - IS1008b
+      - IS1008c
+      - IS1008d
+      - TS3004a
+      - TS3004b
+      - TS3004c
+      - TS3004d
+    train:
+      - EN2001a
+      - EN2001b
+      - EN2001d
+      - EN2001e
+      - EN2003a
+      - EN2004a
+      - EN2005a
+      - EN2006a
+      - EN2006b
+      - EN2009b
+      - EN2009c
+      - EN2009d
+      - ES2002a
+      - ES2002b
+      - ES2002c
+      - ES2002d
+      - ES2003a
+      - ES2003b
+      - ES2003c
+      - ES2003d
+      - ES2005a
+      - ES2005b
+      - ES2005c
+      - ES2005d
+      - ES2006a
+      - ES2006b
+      - ES2006c
+      - ES2006d
+      - ES2007a
+      - ES2007b
+      - ES2007c
+      - ES2007d
+      - ES2008a
+      - ES2008b
+      - ES2008c
+      - ES2008d
+      - ES2009a
+      - ES2009b
+      - ES2009c
+      - ES2009d
+      - ES2010a
+      - ES2010b
+      - ES2010c
+      - ES2010d
+      - ES2012a
+      - ES2012b
+      - ES2012c
+      - ES2012d
+      - ES2013a
+      - ES2013b
+      - ES2013c
+      - ES2013d
+      - ES2014a
+      - ES2014b
+      - ES2014c
+      - ES2014d
+      - ES2015a
+      - ES2015b
+      - ES2015c
+      - ES2015d
+      - ES2016a
+      - ES2016b
+      - ES2016c
+      - ES2016d
+      - IB4005
+      - IN1001
+      - IN1002
+      - IN1005
+      - IN1007
+      - IN1008
+      - IN1009
+      - IN1012
+      - IN1013
+      - IN1014
+      - IN1016
+      - IS1000a
+      - IS1000b
+      - IS1000c
+      - IS1000d
+      - IS1001a
+      - IS1001b
+      - IS1001c
+      - IS1001d
+      - IS1002b
+      - IS1002c
+      - IS1002d
+      - IS1003a
+      - IS1003b
+      - IS1003c
+      - IS1003d
+      - IS1004a
+      - IS1004b
+      - IS1004c
+      - IS1004d
+      - IS1005a
+      - IS1005b
+      - IS1005c
+      - IS1006a
+      - IS1006b
+      - IS1006c
+      - IS1006d
+      - IS1007a
+      - IS1007b
+      - IS1007c
+      - IS1007d
+      - TS3005a
+      - TS3005b
+      - TS3005c
+      - TS3005d
+      - TS3006a
+      - TS3006b
+      - TS3006c
+      - TS3006d
+      - TS3007a
+      - TS3007b
+      - TS3007c
+      - TS3007d
+      - TS3008a
+      - TS3008b
+      - TS3008c
+      - TS3008d
+      - TS3009a
+      - TS3009b
+      - TS3009c
+      - TS3009d
+      - TS3010a
+      - TS3010b
+      - TS3010c
+      - TS3010d
+      - TS3011a
+      - TS3011b
+      - TS3011c
+      - TS3011d
+      - TS3012a
+      - TS3012b
+      - TS3012c
+      - TS3012d
+
+dataset:
+  # Opens every utterance id. Fixed by the published OWSM data.
+  prefix: AMI
+  # kaldi_to_whisper.py is passed --src eng, so the id carries ISO 639-3.
+  lang: eng
+  task: asr
+  cache_subdir: ami
