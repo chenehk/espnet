@@ -1,0 +1,149 @@
+defaults:
+  - ../../config
+  - _self_
+
+# Every value here is read by builder.py or dataset.py.
+
+# The corpus ships a test split too; OWSM prepares only these two.
+splits:
+  - dev
+  - train
+
+builder:
+  source_env_var: FLEURS
+  # FLEURS is distributed through HuggingFace, so the corpus is that cache
+  # rather than a directory of files; prepare_fleurs.py calls load_dataset the
+  # same way.
+  hf_dataset: google/xtreme_s
+  hf_config: fleurs.all
+  # validation is OWSM's dev. The corpus' own "test" is not prepared.
+  hf_splits:
+    dev: validation
+    train: train
+
+  # The cached manifest records the paths the corpus had when it was first
+  # downloaded, which are not where it lives now. Everything from this marker
+  # rightwards is kept and rehung under the current root; upstream skips an
+  # example whose audio is missing, so without this every example is skipped.
+  path_marker: /downloads/extracted/
+
+  # FLEURS audio is 16 kHz, and num_samples is in the manifest, so no file is
+  # opened for its duration.
+  samples_per_second: 16000
+
+  # lang_id -> ISO 639-3. prepare_fleurs.py resolves this through the iso639
+  # package and then overrides twenty-odd entries by hand, so the result is
+  # not recomputable from the lang_id alone: only 10 of these 102 equal the
+  # lang_id prefix. Frozen, and cross-checked against the dump -- every one of
+  # the 102 appears in dev, and none maps to more than one code across 34,052
+  # utterances.
+  language_map:
+    "af_za": afr
+    "am_et": amh
+    "ar_eg": ara
+    "as_in": asm
+    "ast_es": ast
+    "az_az": aze
+    "be_by": bel
+    "bg_bg": bul
+    "bn_in": ben
+    "bs_ba": bos
+    "ca_es": cat
+    "ceb_ph": ceb
+    "ckb_iq": ckb
+    "cmn_hans_cn": zho
+    "cs_cz": ces
+    "cy_gb": cym
+    "da_dk": dan
+    "de_de": deu
+    "el_gr": ell
+    "en_us": eng
+    "es_419": spa
+    "et_ee": est
+    "fa_ir": fas
+    "ff_sn": ful
+    "fi_fi": fin
+    "fil_ph": fil
+    "fr_fr": fra
+    "ga_ie": gle
+    "gl_es": glg
+    "gu_in": guj
+    "ha_ng": hau
+    "he_il": heb
+    "hi_in": hin
+    "hr_hr": hrv
+    "hu_hu": hun
+    "hy_am": hye
+    "id_id": ind
+    "ig_ng": ibo
+    "is_is": isl
+    "it_it": ita
+    "ja_jp": jpn
+    "jv_id": jav
+    "ka_ge": kat
+    "kam_ke": kam
+    "kea_cv": kea
+    "kk_kz": kaz
+    "km_kh": khm
+    "kn_in": kan
+    "ko_kr": kor
+    "ky_kg": kir
+    "lb_lu": ltz
+    "lg_ug": lug
+    "ln_cd": lin
+    "lo_la": lao
+    "lt_lt": lit
+    "luo_ke": luo
+    "lv_lv": lav
+    "mi_nz": mri
+    "mk_mk": mkd
+    "ml_in": mal
+    "mn_mn": mon
+    "mr_in": mar
+    "ms_my": mas
+    "mt_mt": mlt
+    "my_mm": mya
+    "nb_no": nob
+    "ne_np": npi
+    "nl_nl": nld
+    "nso_za": nso
+    "ny_mw": nya
+    "oc_fr": oci
+    "om_et": orm
+    "or_in": ori
+    "pa_in": pan
+    "pl_pl": pol
+    "ps_af": pus
+    "pt_br": por
+    "ro_ro": ron
+    "ru_ru": rus
+    "sd_in": snd
+    "sk_sk": slk
+    "sl_si": slv
+    "sn_zw": sna
+    "so_so": som
+    "sr_rs": srp
+    "sv_se": swe
+    "sw_ke": swh
+    "ta_in": tam
+    "te_in": tel
+    "tg_tj": tgk
+    "th_th": tha
+    "tr_tr": tur
+    "uk_ua": ukr
+    "umb_ao": umb
+    "ur_pk": urd
+    "uz_uz": uzb
+    "vi_vn": vie
+    "wo_sn": wol
+    "xh_za": xho
+    "yo_ng": yor
+    "yue_hant_hk": yue
+    "zu_za": zul
+
+dataset:
+  # Opens every utterance id. Fixed by the published OWSM data.
+  prefix: FLEURS
+  # No lang: each row carries the language of its example.
+  task: asr
+  cache_subdir: fleurs
