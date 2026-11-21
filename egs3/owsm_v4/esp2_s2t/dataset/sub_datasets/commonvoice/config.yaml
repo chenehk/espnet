@@ -1,0 +1,157 @@
+defaults:
+  - ../../config
+  - _self_
+
+# Every value here is read by builder.py or dataset.py.
+
+# CommonVoice ships validated/dev/test; OWSM derives train from them, and the
+# published dump has only these two.
+splits:
+  - dev
+  - train
+
+builder:
+  source_env_var: COMMONVOICE
+  # Fixed by the published OWSM data, not a knob: upstream's
+  # egs2/owsm_v3/s2t1/local/cv-iso-693-3.txt, which the utterance ids encode.
+  # It is not derivable from dataset/utils.py's ISO table -- it resolves CV's
+  # locale codes (zh-HK is yue, not zho; zh-TW and zh-CN both collapse to
+  # zho), and fy-NL maps to frr, Northern Frisian, where Western Frisian is
+  # fry. The dump carries 3,170 <frr> rows and no <fry>, so that mapping is
+  # reproduced rather than corrected.
+  language_map:
+    "ab": abk
+    "bn": ben
+    "de": deu
+    "fi": fin
+    "hu": hun
+    "kk": kaz
+    "ml": mal
+    "nn-NO": nno
+    "rw": kin
+    "sw": swa
+    "ug": uig
+    "zh-TW": zho
+    "ar": ara
+    "br": bre
+    "dv": div
+    "fr": fra
+    "hy-AM": hye
+    "or": ory
+    "sah": sah
+    "as": asm
+    "sat": sat
+    "ast": ast
+    "az": aze
+    "ba": bak
+    "bas": bas
+    "hsb": hsb
+    "kab": kab
+    "mk": mkd
+    "nl": nld
+    "ru": rus
+    "sv-SE": swe
+    "tw": twi
+    "zh-HK": yue
+    "zh-CN": zho
+    "ne-NP": nep
+    "bg": bul
+    "da": dan
+    "be": bel
+    "kmr": kmr
+    "mn": mon
+    "ta": tam
+    "uk": ukr
+    "ca": cat
+    "el": ell
+    "fy-NL": frr
+    "ia": ina
+    "ky": kir
+    "mr": mar
+    "pa-IN": pan
+    "th": tha
+    "ur": urd
+    "ckb": ckb
+    "en": eng
+    "ga-IE": gle
+    "id": ind
+    "lg": lga
+    "mrj": mrj
+    "pl": pol
+    "sc": srd
+    "ti": tir
+    "uz": uzb
+    "cnh": cnh
+    "eo": epo
+    "gl": glg
+    "ig": ibo
+    "lt": lit
+    "mt": mlt
+    "pt": por
+    "sk": slk
+    "tig": tig
+    "vi": vie
+    "cs": ces
+    "es": spa
+    "gn": grn
+    "it": ita
+    "lv": lav
+    "myv": myv
+    "rm-sursilv": roh
+    "skr": skr
+    "tok": tok
+    "vot": vot
+    "cv": chv
+    "et": est
+    "ha": hau
+    "ja": jpn
+    "mdf": mdf
+    "nan-tw": nan
+    "rm-vallader": roh
+    "sl": slv
+    "tr": tur
+    "yue": yue
+    "cy": cym
+    "eu": eus
+    "hi": hin
+    "ka": kat
+    "mhr": mhr
+    "ro": ron
+    "sr": srp
+    "tt": tat
+    "fa": fas
+    "tk": tuk
+    "is": isl
+    "ko": kor
+    "quy": quy
+    "yo": yor
+    "lo": lao
+    "dyu": dgd
+    "oc": oci
+  # Speakers held out of train. The dump holds out dev only: its train
+  # carries the test speakers, so ours was 604,690 rows short of it.
+  # Add "test" to reproduce egs2/owsm_v3/s2t1/local/prepare_commonvoice.py
+  # instead, which carves three speaker-disjoint sets.
+  held_out_from_train:
+    - dev
+
+  # A transcript longer than this is dropped, as upstream drops it.
+  max_text_length: 2000
+  audio:
+    # The clips are mp3 and the tsv carries no duration, so every utterance
+    # needs its header read: filesize/bitrate does not work here (two
+    # bitrates in play, errors to 2.6 s) and mutagen's estimate is off by up
+    # to 47 ms, which would change the millisecond in every utterance id.
+    read_headers: true
+    workers: 256
+    batch_size: 100000
+    # Files per parallel task; one task per file makes the scheduler the
+    # bottleneck at this scale.
+    chunk_size: 500
+
+dataset:
+  # Opens every utterance id. Fixed by the published OWSM data.
+  prefix: commonvoice
+  # No lang: each row carries the language its directory maps to.
+  task: asr
+  cache_subdir: commonvoice
