@@ -1,0 +1,50 @@
+defaults:
+  - ../../config
+  - _self_
+
+# Every value here is read by builder.py or dataset.py.
+
+# The corpus ships a test split too; OWSM prepares only these two
+# (egs2/owsm_v2/s2t1/local/prepare_multilingual_librispeech.py).
+splits:
+  - dev
+  - train
+
+builder:
+  source_env_var: MLS
+  # The eight languages upstream prepares, in its own order.
+  languages: [nl, en, fr, de, it, pl, pt, es]
+
+  # OWSM does not train on MLS's shipped per-utterance audio. It cuts 30 s
+  # spans out of the LibriVox originals, which upstream re-downloads into
+  # <MLS>/mls_<language>/<split>/audio_long/<stem>.mp3. Downloading 203,626
+  # recordings from archive.org is not reproducible here, so they are rebuilt
+  # from the audio MLS already ships: segments.txt tiles each recording
+  # contiguously -- 0 of 8.6M spans contains a gap -- so laying the utterances
+  # on a silent timeline at their own offsets reproduces the recording wherever
+  # a span can fall. Measured against MLS's own audio at correlation 1.00000.
+  # submit/build_mls_audio_long.sh writes them; they are 16 kHz mono PCM_16
+  # flac rather than mp3, which the read path handles either way.
+  long_audio_env_var: MLS_LONG_AUDIO
+  long_audio_suffix: .flac
+
+  # How a span finds its recording. `stem` is the mp3 basename, which is what
+  # upstream names the download by and what the dump's utterance ids carry --
+  # so it is the default, and the one the dump can be compared against.
+  #
+  # It is not unique. In English train, 248 of 180,605 URLs collapse onto
+  # another's stem: two LibriVox projects recording the same chapter, e.g.
+  #   .../around_world_rs_1005_librivox/aroundtheworldineightydays_02_verne_64kb.mp3
+  #   .../aroundtheworldin80days_1505_librivox/aroundtheworldineightydays_02_verne_64kb.mp3
+  # Upstream has the same collision -- one download overwrites the other and
+  # both recordings' spans then read whichever won. No other language has any.
+  # `url` keys by a hash of the whole URL instead, which is correct but mints
+  # wav_ids the dump does not have.
+  audio_key: stem
+
+dataset:
+  # Opens every utterance id. Fixed by the published OWSM data.
+  prefix: MLS
+  # No lang: each row carries the language of its directory.
+  task: asr
+  cache_subdir: mls
