@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -670,8 +670,13 @@ def run_parallel(function, tasks, default_workers: int = 16):
         logger.info("running %d tasks serially", len(tasks))
         return [function(task) for task in tasks]
 
-    logger.info("running %d tasks on %d local threads", len(tasks), workers)
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    # Processes, not threads. Reading an audio header off Lustre looks like
+    # pure waiting, but measured cold it does not thread: 7.0 files/s serially,
+    # 12.5 with 64 threads and 12.3 with 256, against 213 with 32 processes and
+    # 418 with 128. A warm page cache hides this -- it makes the read pure CPU,
+    # where threads do scale -- so benchmark this on files you have not touched.
+    logger.info("running %d tasks in %d local processes", len(tasks), workers)
+    with ProcessPoolExecutor(max_workers=workers) as pool:
         return list(pool.map(function, tasks))
 
 
@@ -687,7 +692,7 @@ def sub_dataset_config(module: str):
     """Return the ``config.yaml`` sitting beside ``module``, or None.
 
     ``module`` is a dotted name such as
-    ``egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.spgispeech.builder``; the config is
+    ``egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.librispeech.builder``; the config is
     read from its package. Returns None when there is none, so an intermediate
     base class can be declared without one.
     """

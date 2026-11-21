@@ -60,7 +60,9 @@ class OWSMBuilder(DatasetBuilder):
         cls.SOURCE_ENV_VAR = str(builder["source_env_var"])
         cls.EXPECTED_FS = int(builder["expected_fs"])
         cls.PREFIX = str(dataset["prefix"])
-        cls.LANG = str(dataset["lang"])
+        # Absent for a corpus whose source language varies by row, such as
+        # VoxPopuli; those builders put the language on the row instead.
+        cls.LANG = str(dataset.get("lang", ""))
         cls.CACHE_SUBDIR = str(dataset["cache_subdir"])
 
     def is_valid_source_root(self, candidate: Path) -> bool:
@@ -103,6 +105,25 @@ class OWSMBuilder(DatasetBuilder):
             f"create_dataset.corpora.{self.CORPUS}.source_dir."
         )
 
+    def source_destination(self, corpora=None) -> Path:
+        """Where a download should put this corpus, whether or not it is there.
+
+        ``resolve_source_root`` refuses a path that does not yet hold the
+        corpus, which is exactly the state ``prepare_source`` starts from.
+        """
+        import os
+
+        source_dir = self.corpus_options(corpora).get("source_dir")
+        if source_dir:
+            return Path(source_dir)
+        env_path = os.environ.get(self.SOURCE_ENV_VAR)
+        if env_path:
+            return Path(env_path)
+        raise FileNotFoundError(
+            f"Nowhere to download {self.CORPUS} to. Set {self.SOURCE_ENV_VAR} "
+            f"or pass create_dataset.corpora.{self.CORPUS}.source_dir."
+        )
+
     def corpus_options(self, corpora) -> dict:
         """Return this corpus' entry from the ``corpora`` block."""
         return dict((corpora or {}).get(self.CORPUS) or {})
@@ -126,13 +147,24 @@ class OWSMBuilder(DatasetBuilder):
             return False
         return True
 
+    #: Where to get this corpus, for a builder that cannot fetch it itself.
+    #: Shown in the error, so the message says what to do rather than only
+    #: what failed. A builder that overrides ``prepare_source`` ignores it.
+    SOURCE_HINT: str = ""
+
     def prepare_source(self, corpora=None, **_kwargs) -> None:
         """Raise unless the corpus is already on disk.
 
-        OWSM's corpora are licence-gated or distributed out of band, so there
-        is nothing to download; this only reports where it looked.
+        Several of OWSM's corpora are licence-gated or distributed out of
+        band and cannot be downloaded by a script at all; for those this only
+        reports where it looked and, where there is one, where to get it.
         """
-        self.resolve_source_root(self.corpus_options(corpora).get("source_dir"))
+        try:
+            self.resolve_source_root(self.corpus_options(corpora).get("source_dir"))
+        except FileNotFoundError as error:
+            if not self.SOURCE_HINT:
+                raise
+            raise FileNotFoundError(f"{error}\n\n{self.SOURCE_HINT}") from error
 
     def is_built(self, recipe_dir, cache=None, corpora=None, **_kwargs) -> bool:
         """Check that every requested split has a cache directory."""
@@ -164,7 +196,9 @@ class OWSMBuilder(DatasetBuilder):
             if target.is_dir():
                 continue
             temporary = root / f".{split}.tmp"
+            scratch = root / f".{split}.gen"
             shutil.rmtree(temporary, ignore_errors=True)
+            shutil.rmtree(scratch, ignore_errors=True)
             failures_path = root / f"{split}.failures.jsonl"
 
             def rows(split=split, failures_path=failures_path):
@@ -179,5 +213,13 @@ class OWSMBuilder(DatasetBuilder):
                     ):
                         yield check_cache_row(row)
 
-            HFDataset.from_generator(rows).save_to_disk(str(temporary))
+            # from_generator fingerprints the generator and its defaults, not
+            # the corpus, so a rebuild after the source changes returns the
+            # previous run's rows and never calls the generator -- which also
+            # leaves <split>.failures.jsonl unwritten. A scratch cache_dir per
+            # build makes that reuse impossible.
+            HFDataset.from_generator(rows, cache_dir=str(scratch)).save_to_disk(
+                str(temporary)
+            )
+            shutil.rmtree(scratch, ignore_errors=True)
             temporary.rename(target)

@@ -16,17 +16,57 @@ from egs3.owsm_v4.esp2_s2t.dataset.utils import (
     sub_dataset_config,
     task_token,
 )
-from espnet3.components.data.base_dataset import BaseDataset
 from espnet3.contract import Field
+from espnet3.components.data.base_dataset import BaseDataset
 
 
-def read_span(wav_path: str, start_time: float, end_time: float) -> np.ndarray:
-    """Read ``[start_time, end_time)`` from one file in a single open."""
+#: The rate the preprocessor pads to; a corpus at another rate is conformed
+#: on read. Sub-datasets that must not be touched set ``target_fs: 0``.
+TARGET_FS = 16000
+
+
+def read_span(
+    wav_path: str,
+    start_time: float,
+    end_time: float,
+    target_fs: int = TARGET_FS,
+    channel: int | None = None,
+) -> np.ndarray:
+    """Read ``[start_time, end_time)`` from one file, mono at ``target_fs``.
+
+    The span is located in the file's own timebase and only then conformed,
+    so the seek is exact whatever the file's rate.
+
+    The mixture is not uniform and the preprocessor pads every utterance to a
+    fixed window at one rate, so a span that arrives at another rate is read
+    as the wrong duration and drifts from its own timestamp tokens: BABEL is
+    8 kHz (with a few 48 kHz recordings), Switchboard 8 kHz two-channel,
+    CommonVoice mp3 32 kHz. egs2 hid this in format_wav_scp.py, which
+    resampled on the way into the dump; there is no equivalent stage here.
+
+    Args:
+        wav_path: The file to read.
+        start_time: Span start, in seconds.
+        end_time: Span end, in seconds.
+        target_fs: Rate to return; ``0`` leaves the file's own rate alone.
+        channel: Which channel a multi-channel file is one speaker of. Left
+            ``None``, the channels are averaged, which is what a recording of
+            one source in several microphones wants and what a two-speaker
+            telephone call does not.
+    """
     with sf.SoundFile(wav_path) as handle:
         rate = handle.samplerate
         handle.seek(int(round(start_time * rate)))
         frames = int(round((end_time - start_time) * rate))
-        return handle.read(frames=frames, dtype="float32", always_2d=False)
+        span = handle.read(frames=frames, dtype="float32", always_2d=False)
+
+    if span.ndim == 2:
+        span = span[:, channel] if channel is not None else span.mean(axis=1)
+    if target_fs and rate != target_fs:
+        import soxr
+
+        span = soxr.resample(span, rate, target_fs)
+    return np.ascontiguousarray(span, dtype="float32")
 
 
 class OWSMDataset(BaseDataset):
@@ -107,6 +147,16 @@ class OWSMDataset(BaseDataset):
         """Return the number of cached utterances; the cache is the order."""
         return len(self._rows)
 
+    def channel_for(self, row: dict) -> int | None:
+        """Return which channel of a multi-channel file this row is.
+
+        ``None`` averages the channels, which suits a recording of one source
+        through several microphones. A corpus whose channels are different
+        speakers -- a telephone call, where a row is one side -- overrides
+        this, because averaging would put both speakers in every sample.
+        """
+        return None
+
     def __getitem__(self, idx: int) -> dict[str, Any]:
         """Return one sample, composing the lang/task prefix and reading audio."""
         row = self._rows[int(idx)]
@@ -116,7 +166,12 @@ class OWSMDataset(BaseDataset):
             row["task"], row["tgt_lang"] or None
         )
         return {
-            "speech": read_span(row["wav_path"], row["start_time"], row["end_time"]),
+            "speech": read_span(
+                row["wav_path"],
+                row["start_time"],
+                row["end_time"],
+                channel=self.channel_for(row),
+            ),
             "text": prefix + row["text"],
             "text_prev": row["text_prev"],
             "text_ctc": row["text_ctc"],
