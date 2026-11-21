@@ -1,0 +1,50 @@
+defaults:
+  - ../../config
+  - _self_
+
+# Every value here is read by builder.py or dataset.py.
+
+splits:
+  - dev
+  - train
+
+builder:
+  # Two roots. The standard flac release says which speakers are in which
+  # split; the chapter audio and the sentence offsets are only in the separate
+  # "original mp3" release (openslr.org/resources/12/original-mp3.tar.gz).
+  # OWSM does not train on the per-utterance flac at all -- it cuts 30 s spans
+  # along the chapter timeline, which is why the dump's ids look like
+  # LibriSpeech_116_288045_000083490_000094140.
+  source_env_var: LIBRISPEECH
+  mp3_env_var: LIBRISPEECH_MP3
+  mp3_subdir: mp3
+
+  # prepare_librispeech.sh passes these five; the dump folds them into two.
+  # The split names the speakers, and every chapter those speakers have in the
+  # mp3 tree is then taken.
+  split_sources:
+    dev:
+      - dev-clean
+      - dev-other
+    train:
+      - train-clean-100
+      - train-clean-360
+      - train-other-500
+
+  # <speaker>-<chapter>.sents.seg.txt is "utt start end" and .sents.trans.txt
+  # is "utt TEXT", one line each, in the same order. The word-level .seg.txt
+  # and .trans.txt beside them are not what the prep reads.
+  segments_suffix: .sents.seg.txt
+  transcript_suffix: .sents.trans.txt
+
+  # The transcripts are upper case and the dump is not.
+  lowercase: true
+
+dataset:
+  # Opens every utterance id. Fixed by the published OWSM data.
+  prefix: LibriSpeech
+  # The id carries the two-letter code here, unlike the corpora prepared
+  # through kaldi_to_whisper.py; the text stream still gets <eng>.
+  lang: en
+  task: asr
+  cache_subdir: librispeech
