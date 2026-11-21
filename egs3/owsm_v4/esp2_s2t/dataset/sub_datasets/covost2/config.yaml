@@ -1,0 +1,69 @@
+defaults:
+  - ../../config
+  - _self_
+
+# Every value here is read by builder.py or dataset.py.
+
+# The tsv files label rows train/dev/test (and _covost/_dup variants OWSM does
+# not use); the published dump carries only these two.
+splits:
+  - dev
+  - train
+
+builder:
+  source_env_var: COVOST2
+  # The clips themselves are CommonVoice's. CoVoST2 ships translations keyed by
+  # the mp3 name and nothing else -- no transcript, no speaker -- so the source
+  # text and the client_id that opens every utterance id come from
+  # <COMMONVOICE>/<locale>/validated.tsv. Verified against the dump: the
+  # client_id matches on every sampled utterance across es, en, ru and it.
+  # Common Voice v13, which is what is on disk. CoVoST2 was built against v4,
+  # and v4 is not reproducible here, so a share of the transcripts differ from
+  # the dump -- measured on dev asr rows, after the punctuation normalization
+  # below:
+  #
+  #     lang   byte-exact   differs only in quote marks   other
+  #     de         98.0%                           0.7%    1.4%
+  #     ru         99.6%                           0.4%    0.0%
+  #     es         94.4%                           5.4%    0.2%
+  #     it         80.1%                          19.8%    0.2%
+  #     fr         70.6%                          27.3%    2.0%
+  #
+  # The residual is almost entirely quotation marks: v4 kept the quotes around
+  # a quoted sentence (French guillemets among them) and v13 strips them, so
+  # the dump reads "X". where v13 reads X. Nothing in the read path can
+  # recover characters the corpus no longer ships. Accepted deliberately.
+  commonvoice_env_var: COMMONVOICE
+  # validated is the set CoVoST2 re-splits; other and invalidated pick up the
+  # remaining ~0.2% of clips. Measured over all 36 directions, v13 resolves
+  # 99.98% of CoVoST2's rows -- no v4 release is needed.
+  commonvoice_splits:
+    - validated
+    - other
+    - invalidated
+
+  # CoVoST2 tags some train rows train_covost, and egs2's process_tsv.py folds
+  # them in; matching only "train" would under-build the split.
+  split_to_covost_split:
+    dev:
+      - dev
+    train:
+      - train
+      - train_covost
+
+  # A clip is probed once and reused across every pair that references it,
+  # which matters because all fourteen en_X pairs share the same English
+  # clips. Durations are not in either manifest, so the mp3 header is the only
+  # source -- the same cost that dominates the CommonVoice build.
+  audio:
+    read_headers: true
+    workers: 128
+    batch_size: 200000
+    chunk_size: 500
+
+dataset:
+  # Opens every utterance id. Fixed by the published OWSM data.
+  prefix: CoVoST2
+  # No lang: each row carries the source language of its pair.
+  # No task either: a pair emits one <asr> row and one <st_*> row per clip.
+  cache_subdir: covost2
