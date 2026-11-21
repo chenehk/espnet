@@ -1,0 +1,44 @@
+defaults:
+  - ../../config
+  - _self_
+
+# Every value here is read by builder.py or dataset.py.
+
+# egs2 carves tr_no_dev/dev/eval1; the published dump carries the first two.
+splits:
+  - dev
+  - train
+
+builder:
+  source_env_var: VCTK
+  # <root>/VCTK-Corpus/{wav48,txt,lab/mono}/<speaker>/. The speaker-closed
+  # branch of egs2/vctk/asr1/local/data.sh, not the speaker-open one: that
+  # reads the Noisy Speech Database, whose split is p226/p287 and whose
+  # trainset_28spk_txt is not here, while the dump spans every speaker.
+  corpus_subdir: VCTK-Corpus
+
+  # data_prep_speaker_closed.sh walks wav48 and skips p315.
+  exclude_speakers:
+    - p315
+
+  # Utterances are sorted by name per speaker; the last ten become dev+eval,
+  # of which the first five are eval1 and the last five are dev. 108 speakers
+  # times five is the dump's 540 dev rows.
+  num_dev: 5
+  num_eval: 5
+
+  # Each utterance is trimmed to its speech. lab/mono is an HTK label in
+  # 100 ns units: walk in from each end past the "pau" symbols and take the
+  # boundary. p225_358 gives 20350001 -> 2.035 s and 50200000 -> 5.020 s,
+  # which is what the dump's id encodes. No audio file is opened.
+  label_subdir: lab/mono
+  label_units_per_second: 10000000
+  pause_symbol: pau
+
+dataset:
+  # Opens every utterance id. Fixed by the published OWSM data.
+  prefix: VCTK
+  # kaldi_to_whisper.py is passed --src eng, so the id carries ISO 639-3.
+  lang: eng
+  task: asr
+  cache_subdir: vctk
