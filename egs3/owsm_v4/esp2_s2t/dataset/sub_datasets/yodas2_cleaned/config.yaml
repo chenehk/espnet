@@ -1,0 +1,34 @@
+defaults:
+  - ../../config
+  - _self_
+
+# Every value here is read by the shared cleaned-YODAS builder or dataset.
+
+# The cleaning keeps everything it keeps; there is no held-out split.
+splits:
+  - train
+
+builder:
+  # Where the metadata and the transcoded audio live. prepare_source writes
+  # data/<lang>/<lang>-NNNNN.jsonl.gz and audio/<lang>/<shard>/<stem>.opus here.
+  source_env_var: YODAS2_CLEANED
+
+  # The published metadata for YODAS2.
+  metadata_repo: espnet/yodas2-clean-metadata
+
+  # Which YODAS the metadata was cleaned from. Decides where the audio comes
+  # from and how a shard name maps onto a file in that repository.
+  source: yodas2
+
+  # The directory the published JSONL sits under in the metadata repository.
+  # Empty reads whatever that repository holds at its top level.
+  rows_dir: data
+
+dataset:
+  # Utterance ids keep the grammar the cleaning writes:
+  # <wav_id>_<start_ms>_<end_ms>_<lang>_asr.
+  prefix: ""
+  # Every row carries its own language; this is only the corpus default.
+  lang: mul
+  task: asr
+  cache_subdir: yodas2_cleaned

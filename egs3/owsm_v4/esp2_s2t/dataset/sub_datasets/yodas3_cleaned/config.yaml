@@ -2,7 +2,7 @@ defaults:
   - ../../config
   - _self_
 
-# Every value here is read by builder.py or dataset.py.
+# Every value here is read by the shared cleaned-YODAS builder or dataset.
 
 # The cleaning keeps everything it keeps; there is no held-out split.
 splits:
@@ -10,20 +10,19 @@ splits:
 
 builder:
   # Where the metadata and the transcoded audio live. prepare_source writes
-  # rows/<lang>/<shard>.jsonl.gz and audio/<lang>/<shard>/<stem>.opus here.
-  source_env_var: YODAS_CLEANED
+  # data/<lang>/<lang>-NNNNN.jsonl.gz and audio/<lang>/<shard>/<stem>.opus here.
+  source_env_var: YODAS3_CLEANED
 
-  # The published metadata. Not uploaded yet: set this to the repository the
-  # filtered rows are pushed to before running prepare_source.
-  metadata_repo: espnet/yodas_cleaned_owsm_v5
+  # The published metadata for YODAS v3.
+  metadata_repo: espnet/yodas3-clean-metadata
 
   # Which YODAS the metadata was cleaned from. Decides where the audio comes
   # from and how a shard name maps onto a file in that repository.
-  source: yodas2
+  source: yodas3
 
-  # Which LID rule's output to take, as the cleaning names its work dirs.
-  # Empty takes whatever the repository holds at its top level.
-  rule: filtered
+  # The directory the published JSONL sits under in the metadata repository.
+  # Empty reads whatever that repository holds at its top level.
+  rows_dir: data
 
 dataset:
   # Utterance ids keep the grammar the cleaning writes:
@@ -32,4 +31,4 @@ dataset:
   # Every row carries its own language; this is only the corpus default.
   lang: mul
   task: asr
-  cache_subdir: yodas_cleaned
+  cache_subdir: yodas3_cleaned

@@ -1,10 +1,11 @@
 """Cleaned YODAS, from metadata published on the Hugging Face Hub.
 
 The cleaning pipeline (``egs2/owsm_v4/s2t1/local/yodas3*.py``) keeps only
-metadata: one gzipped JSONL per language and shard, each line a long-form
+metadata: gzipped JSONL under ``data/<lang>/``, each line a long-form
 utterance with its span, its three text streams and a ``wav_path`` of the form
-``<source>://<lang>/<shard>/<stem>``. That is what gets published, and it is
-small -- the whole YODAS2 production run is 12 GB.
+``<source>://<lang>/<shard>/<stem>`` naming the audio shard the recording is
+in. That is what gets published, and it is small -- 23 GB for the YODAS v3
+production run, against the corpus' hundreds of terabytes of audio.
 
 The audio is not published with it. YODAS' own shards are on the Hub, but not
 in a form this recipe can read: YODAS v3 ships WebM, YODAS2 ships 24 kHz WAV,
@@ -14,8 +15,10 @@ to 16 kHz mono Opus. That is the cleaning's own pass 2, run by whoever
 consumes the metadata rather than by whoever produced it, and it is the
 expensive step: the metadata downloads in minutes, the audio in days.
 
-``sub_datasets/yodas3`` is the sibling of this builder for the case where the
-cleaning ran locally and pass 2 has already written the audio.
+The published files are re-sharded to about a gigabyte each, so one of them
+covers several audio shards and an audio shard can straddle two of them. Audio
+is therefore fetched and marked done per *audio* shard, named by ``wav_path``,
+after a pass over the whole language's metadata -- never per published file.
 """
 
 from __future__ import annotations
@@ -34,39 +37,22 @@ from typing import Iterable, Iterator
 from egs3.owsm_v4.esp2_s2t.dataset.builder import OWSMBuilder
 from egs3.owsm_v4.esp2_s2t.dataset.utils import sub_dataset_config
 
-_CONFIG = sub_dataset_config(__name__)
-_BUILDER = _CONFIG["builder"]
-
-TASK = str(_CONFIG["dataset"]["task"])
-METADATA_REPO = str(_BUILDER["metadata_repo"])
-SOURCE = str(_BUILDER["source"])
-RULE = str(_BUILDER["rule"])
+#: Where each source's audio lives. espnet/yodas3 was renamed to
+#: espnet/yodas3.1 and now 307-redirects there; the canonical id is used so a
+#: fetch does not depend on the redirect outliving it.
 AUDIO_REPO = {
     "yodas2": "espnet/yodas2",
-    "yodas3": "espnet/yodas3",
+    "yodas3": "espnet/yodas3.1",
 }
 
 logger = logging.getLogger(__name__)
 
 
 def split_wav_path(wav_path: str) -> tuple[str, str, str]:
-    """``yodas2://de/000_00000000/abc`` -> ``("de", "000_00000000", "abc")``."""
+    """``yodas3://de/0007/abc`` -> ``("de", "0007", "abc")``."""
     _, _, rest = wav_path.partition("://")
     lang, shard, stem = rest.split("/", 2)
     return lang, shard, stem
-
-
-def shard_file(lang: str, shard: str) -> str:
-    """Path of a shard's audio archive inside its Hub repository.
-
-    YODAS2 splits a language across numbered subsets and the cleaning names a
-    shard ``<NNN>_<name>`` after them, so ``de/000_00000000`` is
-    ``data/de000/audio/00000000.tar.gz``. YODAS v3 does not split.
-    """
-    if SOURCE == "yodas2":
-        number, name = shard.split("_", 1)
-        return f"data/{lang}{number}/audio/{name}.tar.gz"
-    return f"data/{lang}/audio/{shard}.tar"
 
 
 def ffmpeg_binary() -> str:
@@ -85,27 +71,85 @@ def ffmpeg_binary() -> str:
 
 
 class YODASCleanedBuilder(OWSMBuilder):
-    """Build the cleaned-YODAS cache from published metadata plus fetched audio."""
+    """Build a cleaned-YODAS cache from published metadata plus fetched audio.
 
-    CORPUS = "yodas_cleaned"
+    This is the shared implementation, not a sub-dataset: it has no
+    ``config.yaml`` and is not registered as a ``data_src``. Each corpus is a
+    package of its own naming its metadata repository and its source, so that
+    YODAS2 and YODAS v3 can appear in one mixture -- which they cannot if the
+    source is a module constant.
+    """
+
+    #: Filled from the subclass's own config.yaml by __init_subclass__.
+    METADATA_REPO: str = ""
+    SOURCE: str = ""
+    ROWS_DIR: str = ""
+    TASK: str = ""
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        """Read the per-corpus keys this builder adds to the shared ones."""
+        super().__init_subclass__(**kwargs)
+        config = sub_dataset_config(cls.__module__)
+        if config is None:
+            return
+        builder = config["builder"]
+        cls.METADATA_REPO = str(builder["metadata_repo"])
+        cls.SOURCE = str(builder["source"])
+        cls.ROWS_DIR = str(builder["rows_dir"])
+        cls.TASK = str(config["dataset"]["task"])
+
+    def shard_file(self, lang: str, shard: str) -> str:
+        """Path of a shard's audio archive inside its Hub repository.
+
+        YODAS2 splits a language across numbered subsets and the cleaning
+        names a shard ``<NNN>_<name>`` after them, so ``de/000_00000000`` is
+        ``data/de000/audio/00000000.tar.gz``. YODAS v3 does not split.
+        """
+        if self.SOURCE == "yodas2":
+            number, name = shard.split("_", 1)
+            return f"data/{lang}{number}/audio/{name}.tar.gz"
+        return f"data/{lang}/audio/{shard}.tar"
+
+    def rows_root(self, source_root: Path) -> Path:
+        """Where the published JSONL lives under the source root."""
+        return source_root / self.ROWS_DIR if self.ROWS_DIR else source_root
 
     def is_valid_source_root(self, candidate: Path) -> bool:
         """Expect the published metadata; the audio is checked per shard."""
-        return (candidate / "rows").is_dir()
+        return self.rows_root(candidate).is_dir()
 
-    def iter_shards(self, source_root: Path, langs=None):
-        """``(lang, shard, rows_file)`` for every published shard, sorted."""
-        for rows_file in sorted((source_root / "rows").glob("*/*.jsonl.gz")):
+    def iter_rows_files(self, source_root: Path, languages=None):
+        """``(lang, rows_file)`` for every published file, sorted."""
+        wanted = {str(x) for x in languages} if languages else None
+        for rows_file in sorted(self.rows_root(source_root).glob("*/*.jsonl.gz")):
             lang = rows_file.parent.name
-            if langs is None or lang in langs:
-                yield lang, rows_file.name.removesuffix(".jsonl.gz"), rows_file
+            if wanted is None or lang in wanted:
+                yield lang, rows_file
+
+    def pending_shards(self, source_root: Path, languages=None) -> dict:
+        """``{lang: {shard: {stem, ...}}}`` for the audio not yet prepared.
+
+        Only shards without a ``DONE`` are collected, which is what keeps the
+        set small enough to hold for a language the size of English.
+        """
+        pending: dict[str, dict[str, set[str]]] = {}
+        done: dict[tuple[str, str], bool] = {}
+        for _, rows_file in self.iter_rows_files(source_root, languages):
+            for row in self.read_rows(rows_file):
+                lang, shard, stem = split_wav_path(row["wav_path"])
+                key = (lang, shard)
+                if key not in done:
+                    done[key] = (source_root / "audio" / lang / shard / "DONE").exists()
+                if not done[key]:
+                    pending.setdefault(lang, {}).setdefault(shard, set()).add(stem)
+        return pending
 
     def prepare_source(self, corpora=None, **_kwargs) -> None:
-        """Download the metadata, then the audio each shard needs.
+        """Download the metadata, then the audio each shard it names needs.
 
-        Audio is fetched shard by shard and a shard is marked ``DONE`` only
-        once every recording it names has been transcoded, so a job killed at
-        its walltime resumes rather than restarts.
+        A shard is marked ``DONE`` only once every recording it names has been
+        transcoded, so a job killed at its walltime resumes rather than
+        restarts.
         """
         from huggingface_hub import hf_hub_download, snapshot_download
 
@@ -113,51 +157,57 @@ class YODASCleanedBuilder(OWSMBuilder):
         dest = self.source_destination(corpora)
         languages = options.get("languages")
 
-        rows = dest / "rows"
-        if not rows.is_dir():
-            logger.info("downloading %s", METADATA_REPO)
-            snapshot_download(
-                repo_id=METADATA_REPO,
-                repo_type="dataset",
-                local_dir=str(dest),
-                allow_patterns=[f"{RULE}/*"] if RULE else None,
-            )
-            if not rows.is_dir() and (dest / RULE).is_dir():
-                (dest / RULE).rename(rows)
+        prefix = f"{self.ROWS_DIR}/" if self.ROWS_DIR else ""
+        patterns = (
+            [f"{prefix}{lang}/*" for lang in languages]
+            if languages
+            else [f"{prefix}*"]
+        )
+        logger.info("downloading %s %s", self.METADATA_REPO, patterns)
+        snapshot_download(
+            repo_id=self.METADATA_REPO,
+            repo_type="dataset",
+            local_dir=str(dest),
+            allow_patterns=patterns,
+        )
 
-        for lang, shard, rows_file in self.iter_shards(dest, languages):
-            audio_dir = dest / "audio" / lang / shard
-            if (audio_dir / "DONE").exists():
-                continue
-            stems = {
-                split_wav_path(row["wav_path"])[2]
-                for row in self.read_rows(rows_file)
-            }
-            logger.info("%s/%s: %d recordings", lang, shard, len(stems))
-            archive = hf_hub_download(
-                repo_id=AUDIO_REPO[SOURCE],
-                repo_type="dataset",
-                filename=shard_file(lang, shard),
-            )
-            self.transcode(Path(archive), stems, audio_dir)
-            (audio_dir / "DONE").touch()
+        pending = self.pending_shards(dest, languages)
+        for lang in sorted(pending):
+            for shard, stems in sorted(pending[lang].items()):
+                audio_dir = dest / "audio" / lang / shard
+                logger.info("%s/%s: %d recordings", lang, shard, len(stems))
+                archive = hf_hub_download(
+                    repo_id=AUDIO_REPO[self.SOURCE],
+                    repo_type="dataset",
+                    filename=self.shard_file(lang, shard),
+                )
+                self.transcode(Path(archive), stems, audio_dir)
+                (audio_dir / "DONE").touch()
 
     @staticmethod
     def read_rows(rows_file: Path) -> Iterator[dict]:
-        """Yield each published utterance of one shard."""
+        """Yield each published utterance of one file."""
         with gzip.open(rows_file, "rt", encoding="utf-8") as stream:
             for line in stream:
                 yield json.loads(line)
 
     def transcode(self, archive: Path, stems: set[str], audio_dir: Path) -> None:
-        """Extract the named recordings and write them as 16 kHz mono Opus."""
+        """Extract the named recordings and write them as 16 kHz mono Opus.
+
+        YODAS v3 ships each recording's subtitles as a ``.json`` beside it
+        under the same stem, so the member's suffix decides, not its stem.
+        """
         audio_dir.mkdir(parents=True, exist_ok=True)
         ffmpeg = ffmpeg_binary()
+        written = set()
         with tarfile.open(archive) as bundle:
             for member in bundle:
                 stem = Path(member.name).stem
                 if not member.isfile() or stem not in stems:
                     continue
+                if member.name.endswith(".json"):
+                    continue
+                written.add(stem)
                 target = audio_dir / f"{stem}.opus"
                 if target.is_file():
                     continue
@@ -173,7 +223,10 @@ class YODASCleanedBuilder(OWSMBuilder):
                     result = subprocess.run(
                         [ffmpeg, "-nostdin", "-y", "-i", raw.name,
                          "-ac", "1", "-ar", str(self.EXPECTED_FS),
-                         "-c:a", "libopus", "-b:a", "28k", str(partial)],
+                         "-c:a", "libopus", "-b:a", "28k",
+                         # The muxer cannot be guessed from the .tmp the write
+                         # is staged through.
+                         "-f", "opus", str(partial)],
                         capture_output=True,
                     )
                 if result.returncode != 0:
@@ -181,17 +234,23 @@ class YODASCleanedBuilder(OWSMBuilder):
                     tail = result.stderr.decode(errors="replace")[-300:]
                     raise RuntimeError(f"ffmpeg failed on {member.name}: {tail}")
                 os.replace(partial, target)
+        missing = sorted(stems - written)
+        if missing:
+            raise RuntimeError(
+                f"{archive} has no audio for {len(missing)} recording(s) the "
+                f"metadata names, e.g. {missing[:3]}"
+            )
 
     def iter_rows(
         self,
         source_root: Path,
         split: str,
         failures: Iterable | None = None,
-        langs: list[str] | None = None,
+        languages: list[str] | None = None,
         limit: int | None = None,
         **_options,
     ) -> Iterator[dict]:
-        """Yield cache rows, shard by shard, skipping shards without audio.
+        """Yield cache rows, skipping the audio shards that are not prepared.
 
         The published ``wav_path`` is a ``<source>://`` reference, not a file;
         it is resolved here against the audio ``prepare_source`` wrote, so the
@@ -199,29 +258,33 @@ class YODASCleanedBuilder(OWSMBuilder):
         """
         source_root = source_root.resolve()
         count = 0
-        for lang, shard, rows_file in self.iter_shards(source_root, langs):
-            audio_dir = source_root / "audio" / lang / shard
-            if not (audio_dir / "DONE").exists():
-                if failures is not None:
-                    failures.write(
-                        json.dumps(
-                            {
-                                "shard": f"{lang}/{shard}",
-                                "error": "audio not prepared for this shard",
-                            }
-                        )
-                        + "\n"
-                    )
-                continue
+        done: dict[tuple[str, str], bool] = {}
+        for _, rows_file in self.iter_rows_files(source_root, languages):
             for row in self.read_rows(rows_file):
-                _, _, stem = split_wav_path(row["wav_path"])
+                lang, shard, stem = split_wav_path(row["wav_path"])
+                key = (lang, shard)
+                audio_dir = source_root / "audio" / lang / shard
+                if key not in done:
+                    done[key] = (audio_dir / "DONE").exists()
+                    if not done[key] and failures is not None:
+                        failures.write(
+                            json.dumps(
+                                {
+                                    "shard": f"{lang}/{shard}",
+                                    "error": "audio not prepared for this shard",
+                                }
+                            )
+                            + "\n"
+                        )
+                if not done[key]:
+                    continue
                 yield {
                     "utt_id": row["utt_id"],
                     "wav_path": str(audio_dir / f"{stem}.opus"),
                     "start_time": row["start_time"],
                     "end_time": row["end_time"],
                     "lang": row["lang"].strip("<>"),
-                    "task": TASK,
+                    "task": self.TASK,
                     "tgt_lang": "",
                     "text": row["text_with_time"],
                     "text_prev": row["prev_text"],
