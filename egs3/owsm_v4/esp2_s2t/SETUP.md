@@ -36,9 +36,17 @@ means "download it here", not "fail"**. A typo therefore starts a
 multi-terabyte download instead of using a corpus the machine already holds.
 Set `OWSM_CACHE` to an absolute path on a large filesystem.
 
-Two further variables are optional. `MLS_LONG_AUDIO` and `LIBRISPEECH_MP3`
-name the second tree each of those corpora needs; leave them unset and both
-are created beside the corpus by `prepare_source`.
+Four further variables are optional:
+
+| Variable | Effect when unset |
+|---|---|
+| `MLS_LONG_AUDIO` | the rebuilt recordings land beside the corpus |
+| `LIBRISPEECH_MP3` | the original-mp3 release lands beside the flac one |
+| `YODAS2_AUDIO` | YODAS2 shard archives are fetched from the Hub rather than read from a local mirror of it (section 6) |
+| `FFMPEG` | the static build from `imageio-ffmpeg` is used; without either, the YODAS builder raises, because Delta ships no ffmpeg |
+
+`OWSM_PARALLEL_ENV`, `OWSM_PARALLEL_WORKERS` and `DASK_CONFIG` choose how the
+build is spread; they have their own section below.
 
 ## 3. Do not `source ./path.sh`
 
@@ -54,7 +62,25 @@ Python environment. Instead:
 `recipe_dir` is `.`, so `exp_dir`, `data_dir`, `stats_dir` and the tokenizer
 path all resolve against the working directory. Run from the recipe.
 
-## 4. The stages, in order
+## 4. The configs compose; do not read them with a plain loader
+
+A training config carries only its model, schedule and trainer. The corpora
+live in one shared file per mixture, pulled in at the top:
+
+    defaults:
+      - mixture_owsm_v4_clean
+      - _self_
+
+`run.py` resolves that through `load_and_merge_config`, which also merges the
+packaged `egs3.TEMPLATE` defaults. A script that calls `OmegaConf.load` on one
+of these files instead sees no `dataset.train` and fails with a bare
+`KeyError`, so use the same helper:
+
+    from espnet3.utils.config_utils import load_and_merge_config
+    cfg = load_and_merge_config(Path("conf/owsm_v4_clean_base.yaml"),
+                                config_name="training.yaml")
+
+## 5. The stages, in order
 
     python run.py --stages create_dataset       --training_config conf/<config>.yaml
     python run.py --stages train_tokenizer,collect_stats --training_config conf/<config>.yaml
@@ -64,7 +90,7 @@ path all resolve against the working directory. Run from the recipe.
 does **not** run `collect_stats`, and the model normalises with `global_mvn`
 from `${stats_dir}/train/feats_stats.npz`, so that stage is not optional.
 
-## 5. `create_dataset` is the long pole, and belongs on a CPU node
+## 6. `create_dataset` is the long pole, and belongs on a CPU node
 
 Rough sizes, from each builder's own docstring:
 
@@ -81,16 +107,74 @@ Rough sizes, from each builder's own docstring:
 | FLEURS | via `datasets.load_dataset` |
 
 MLS then rebuilds the recordings OWSM cuts its spans from: 203,626 of them,
-180,605 in English train alone. The builder does this — there is no external
-script — but it is why `parallel.n_workers` is 128 in the shipped configs.
-That value governs every `run_parallel` call site and overrides the
-per-corpus `workers` in the sub-dataset configs, so lowering it to 1 makes
-the CommonVoice duration probe and the MLS rebuild serial.
+180,605 in English train alone, and cleaned YODAS2 transcodes 42,138 shards.
+Both are done by the builders, with no external script, which is why how the
+work is spread matters more here than anywhere else in the recipe.
 
-`parallel.n_workers` has no effect on `--stages train`; the training loaders
-use `dataloader.train.num_workers` instead.
+### The `parallel` block, and running the build across many jobs
 
-## 6. The tokenizer holds the whole mixture in memory
+One `parallel` block governs every `run_parallel` call site and overrides the
+per-corpus `workers` in the sub-dataset configs. It is chosen by environment
+because the right answer differs by stage:
+
+```yaml
+parallel:
+  env: ${oc.env:OWSM_PARALLEL_ENV,local}
+  n_workers: ${oc.decode:${oc.env:OWSM_PARALLEL_WORKERS,128}}
+  options: {}
+```
+
+The default — 128 local processes, one whole Delta `cpu` node — is what a
+training run wants. `train()` calls `set_parallel` too, so a cluster set here
+would be idle Slurm jobs for the length of the run. (It has no other effect on
+training: the loaders use `dataloader.train.num_workers`.)
+
+For `create_dataset`, set `env` to a dask-jobqueue cluster and every builder's
+work fans out across Slurm, **one job per worker**:
+
+    export OWSM_PARALLEL_ENV=slurm
+    export OWSM_PARALLEL_WORKERS=64
+    export DASK_CONFIG=$PWD/submit/dask
+    python run.py --stages create_dataset --training_config conf/<config>.yaml
+
+`options` stays empty on purpose. The account, partition, cores, memory and
+walltime are machine-local, so they live in a dask-jobqueue config that
+`DASK_CONFIG` points at, not in a config meant to be portable:
+
+```yaml
+jobqueue:
+  slurm:
+    account: <your account>
+    queue: <your partition>
+    cores: 8
+    processes: 1
+    memory: 30GB
+    walltime: "08:00:00"
+```
+
+Small workers start sooner than whole nodes. The process that runs
+`create_dataset` holds the Dask scheduler for the whole build, so it belongs
+in a long-lived batch job of its own — a few cores is plenty.
+`submit/build_data.sbatch` does all of the above; it is not tracked, because
+it names an account and a partition.
+
+### What this does and does not speed up
+
+The fan-out is **within** a builder, not across corpora: `create_dataset`
+still visits them one at a time. Only five builders call `run_parallel` —
+`aishell_1`, `commonvoice`, `covost2`, `mls` and `yodas_cleaned`. The rest are
+internally sequential, and their measured times do not move:
+
+| Corpus | Measured |
+|---|---|
+| fleurs | 3:23 |
+| vctk | 1:58 |
+| librispeech | 0:24 |
+| ami | 0:04 |
+
+So expect a floor of roughly six hours however many workers you give it.
+
+## 7. The tokenizer holds the whole mixture in memory
 
 `tokenizer.sample_size: null` means every line goes into a Python list *and*
 a single joined string. At 27M rows that is survivable; with real cleaned
@@ -101,13 +185,13 @@ to about 10M, or skip the stage: drop the published OWSM v4 BPE at
 already in that vocabulary, so the result stays comparable with the published
 models.
 
-## 7. Cleaned YODAS2 is its own project
+## 8. Cleaned YODAS2 is its own project
 
 `yodas2_cleaned` fetches metadata and then transcodes the audio it references:
 195,487 hours, order a terabyte of Opus and thousands of CPU-hours. It has
 never been built at full scale. Budget it separately from everything above.
 
-## 8. Watch Hugging Face egress
+## 9. Watch Hugging Face egress
 
 Pulling the mirrors onto another cluster counts against the account's monthly
 egress, and the Hub warns before it throttles:
@@ -118,7 +202,7 @@ egress, and the Hub warns before it throttles:
 
 Download each corpus once, to a shared filesystem, rather than per user.
 
-## 9. `batch_size` is per rank
+## 10. `batch_size` is per rank
 
 Unlike espnet2, where it is the global total. The shipped configs are
 20 per rank x 2 devices x `accumulate_grad_batches` 8 = a global batch of 320.

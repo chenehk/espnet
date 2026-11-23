@@ -1,0 +1,161 @@
+##########################################################
+#   mixture_owsm_v4_clean
+##########################################################
+# The corpora of one mixture, and the three places each is named: where its
+# source lives, which split each stream reads, and what the tokenizer trains
+# on. A training config picks this up with
+#
+#   defaults:
+#     - mixture_owsm_v4_clean
+#     - _self_
+#
+# so base, small and medium share one copy. Entries under dataset.train are
+# POSITIONAL: append, never reorder, or every shape key after the change is
+# invalidated.
+
+create_dataset:
+  corpora:
+    aishell_1:
+      source_dir: ${oc.env:AISHELL,${recipe_dir}/download/aishell_1}
+    ami:
+      source_dir: ${oc.env:AMI,${recipe_dir}/download/ami}
+    commonvoice:
+      source_dir: ${oc.env:COMMONVOICE,${recipe_dir}/download/commonvoice}
+    covost2:
+      source_dir: ${oc.env:COVOST2,${recipe_dir}/download/covost2}
+    fleurs:
+      source_dir: ${oc.env:FLEURS,${recipe_dir}/download/fleurs}
+    librispeech:
+      source_dir: ${oc.env:LIBRISPEECH,${recipe_dir}/download/librispeech}
+    mls:
+      source_dir: ${oc.env:MLS,${recipe_dir}/download/mls}
+      # The recordings OWSM cuts spans from. prepare_source rebuilds them
+      # from MLS's own utterances; this is a destination, not a prerequisite.
+      long_audio_dir: ${oc.env:MLS_LONG_AUDIO,${recipe_dir}/download/mls_long_audio}
+    vctk:
+      source_dir: ${oc.env:VCTK,${recipe_dir}/download/vctk}
+    voxpopuli:
+      source_dir: ${oc.env:VOXPOPULI,${recipe_dir}/download/voxpopuli}
+    yodas2_cleaned:
+      source_dir: ${oc.env:YODAS2_CLEANED,${recipe_dir}/download/yodas2_cleaned}
+
+dataset:
+  train:
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.aishell_1
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.ami
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.commonvoice
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.covost2
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.fleurs
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.librispeech
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.mls
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.vctk
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.voxpopuli
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.yodas2_cleaned
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+  valid:
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.aishell_1
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.ami
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.commonvoice
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.covost2
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.fleurs
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.librispeech
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.mls
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.vctk
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.voxpopuli
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+
+# S2TPreprocessor turns the cached strings into token ids and pads speech to a
+# fixed 30 s window. text_prev_apply_prob and time_apply_prob are the
+# augmentation OWSM trains with, not a filter. DataOrganizer instantiates this
+# twice and forces train=false on the valid copy, so validation sees none of it.
+
+tokenizer:
+  text_builder:
+    _target_: egs3.owsm_v4.esp2_s2t.dataset.dataset.iter_text
+    recipe_dir: ${recipe_dir}
+    cache: ${cache}
+    entries:
+      - {corpus: aishell_1, split: train}
+      - {corpus: ami, split: train}
+      - {corpus: commonvoice, split: train}
+      - {corpus: covost2, split: train}
+      - {corpus: fleurs, split: train}
+      - {corpus: librispeech, split: train}
+      - {corpus: mls, split: train}
+      - {corpus: vctk, split: train}
+      - {corpus: voxpopuli, split: train}
+      - {corpus: yodas2_cleaned, split: train}
