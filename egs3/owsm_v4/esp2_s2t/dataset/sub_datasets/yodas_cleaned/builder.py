@@ -45,6 +45,10 @@ AUDIO_REPO = {
     "yodas3": "espnet/yodas3.1",
 }
 
+#: ffmpeg outputs per invocation; a recording with hundreds of spans
+#: would otherwise exceed the command-line length limit.
+OUTPUTS_PER_CALL = 64
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,25 +59,35 @@ def split_wav_path(wav_path: str) -> tuple[str, str, str]:
     return lang, shard, stem
 
 
-def transcode(archive: Path, stems: set[str], audio_dir: Path, fs: int) -> None:
-    """Extract the named recordings and write them as 16 kHz mono Opus.
+def transcode(archive: Path, spans: list, audio_dir: Path, fs: int) -> None:
+    """Cut the kept spans out of a shard and write each as 16 kHz mono Opus.
 
-    YODAS v3 ships each recording's subtitles as a ``.json`` beside it
-    under the same stem, so the member's suffix decides, not its stem.
+    One output file per utterance, not per recording: the cleaning keeps a
+    little over half of YODAS2 and two thirds of YODAS v3, and the rest is
+    audio nothing ever reads. One ffmpeg call per recording emits all of its
+    spans, so the decode is paid once and only the kept audio is encoded.
+
+    YODAS v3 ships each recording's subtitles as a ``.json`` beside it under
+    the same stem, so the member's suffix decides, not its stem.
     """
     audio_dir.mkdir(parents=True, exist_ok=True)
     ffmpeg = ffmpeg_binary()
+    by_stem: dict[str, list] = {}
+    for utt_id, stem, begin, finish in spans:
+        by_stem.setdefault(stem, []).append((utt_id, float(begin), float(finish)))
+
     written = set()
     with tarfile.open(archive) as bundle:
         for member in bundle:
             stem = Path(member.name).stem
-            if not member.isfile() or stem not in stems:
+            if not member.isfile() or member.name.endswith(".json"):
                 continue
-            if member.name.endswith(".json"):
+            wanted = by_stem.get(stem)
+            if wanted is None:
                 continue
             written.add(stem)
-            target = audio_dir / f"{stem}.opus"
-            if target.is_file():
+            todo = [s for s in wanted if not (audio_dir / f"{s[0]}.opus").is_file()]
+            if not todo:
                 continue
             source = bundle.extractfile(member)
             if source is None:
@@ -83,31 +97,50 @@ def transcode(archive: Path, stems: set[str], audio_dir: Path, fs: int) -> None:
             ) as raw:
                 shutil.copyfileobj(source, raw)
                 raw.flush()
-                partial = target.with_suffix(".opus.tmp")
-                result = subprocess.run(
-                    [ffmpeg, "-nostdin", "-y", "-i", raw.name,
-                     "-ac", "1", "-ar", str(fs),
-                     "-c:a", "libopus", "-b:a", "28k",
-                     # The muxer cannot be guessed from the .tmp the write
-                     # is staged through.
-                     "-f", "opus", str(partial)],
-                    capture_output=True,
-                )
-            if result.returncode != 0:
-                partial.unlink(missing_ok=True)
-                tail = result.stderr.decode(errors="replace")[-300:]
-                raise RuntimeError(f"ffmpeg failed on {member.name}: {tail}")
-            os.replace(partial, target)
-    missing = sorted(stems - written)
+                # In batches: a recording with hundreds of spans would
+                # otherwise build a command line longer than the shell allows.
+                for batch in (
+                    todo[i : i + OUTPUTS_PER_CALL]
+                    for i in range(0, len(todo), OUTPUTS_PER_CALL)
+                ):
+                    command = [ffmpeg, "-nostdin", "-y", "-i", raw.name]
+                    staged = []
+                    for utt_id, begin, finish in batch:
+                        partial = audio_dir / f"{utt_id}.opus.tmp"
+                        staged.append((partial, audio_dir / f"{utt_id}.opus"))
+                        command += [
+                            "-ss", f"{begin:.3f}", "-to", f"{finish:.3f}",
+                            "-ac", "1", "-ar", str(fs),
+                            "-c:a", "libopus", "-b:a", "28k",
+                            # The muxer cannot be guessed from the .tmp the
+                            # write is staged through.
+                            "-f", "opus", str(partial),
+                        ]
+                    result = subprocess.run(command, capture_output=True)
+                    if result.returncode != 0:
+                        for partial, _ in staged:
+                            partial.unlink(missing_ok=True)
+                        tail = result.stderr.decode(errors="replace")[-300:]
+                        raise RuntimeError(f"ffmpeg failed on {member.name}: {tail}")
+                    for partial, target in staged:
+                        os.replace(partial, target)
+
+    missing = sorted(set(by_stem) - written)
     if missing:
         raise RuntimeError(
             f"{archive} has no audio for {len(missing)} recording(s) the "
             f"metadata names, e.g. {missing[:3]}"
         )
+    absent = [u for u, _, _, _ in spans if not (audio_dir / f"{u}.opus").is_file()]
+    if absent:
+        raise RuntimeError(
+            f"{archive}: {len(absent)} span(s) produced no audio, "
+            f"e.g. {absent[:3]}"
+        )
 
 
-def shard_archive(source: str, name: str, audio_root=None) -> Path:
-    """Return a local copy of one shard's archive, fetching it if needed.
+def shard_archive(source: str, name: str, audio_root=None) -> tuple:
+    """Return ``(archive, from_hub)`` for one shard, fetching it if needed.
 
     ``audio_root`` is a local mirror of the audio repository laid out the way
     the Hub lays it out, so a cluster that already holds the corpus does not
@@ -120,15 +153,18 @@ def shard_archive(source: str, name: str, audio_root=None) -> Path:
     if audio_root:
         local = Path(audio_root) / name
         if local.is_file():
-            return local
+            return local, False
         raise FileNotFoundError(
             f"{source} audio root {audio_root} has no {name}. "
             "Unset it to fetch from the Hub instead."
         )
-    return Path(
-        hf_hub_download(
-            repo_id=AUDIO_REPO[source], repo_type="dataset", filename=name
-        )
+    return (
+        Path(
+            hf_hub_download(
+                repo_id=AUDIO_REPO[source], repo_type="dataset", filename=name
+            )
+        ),
+        True,
     )
 
 
@@ -140,13 +176,19 @@ def prepare_shard(task) -> tuple:
     abandon the rest. ``run_parallel`` pickles this, so it stays module-level
     and single-argument.
     """
-    source, name, audio_root, stems, audio_dir, fs, key = task
+    source, name, audio_root, spans, audio_dir, fs, key = task
     audio_dir = Path(audio_dir)
+    archive = from_hub = None
     try:
-        archive = shard_archive(source, name, audio_root)
-        transcode(archive, set(stems), audio_dir, fs)
+        archive, from_hub = shard_archive(source, name, audio_root)
+        transcode(archive, spans, audio_dir, fs)
     except Exception as error:
         return key, f"{type(error).__name__}: {error}"
+    finally:
+        # A fetched archive is scratch: YODAS v3's shards are 42 TB in total
+        # and only the spans cut out of them are kept.
+        if from_hub and archive is not None:
+            Path(archive).unlink(missing_ok=True)
     (audio_dir / "DONE").touch()
     return key, None
 
@@ -234,12 +276,13 @@ class YODASCleanedBuilder(OWSMBuilder):
                 yield lang, rows_file
 
     def pending_shards(self, source_root: Path, languages=None) -> dict:
-        """``{lang: {shard: {stem, ...}}}`` for the audio not yet prepared.
+        """``{lang: {shard: [(utt_id, stem, start, end), ...]}}`` still to cut.
 
-        Only shards without a ``DONE`` are collected, which is what keeps the
-        set small enough to hold for a language the size of English.
+        Only shards without a ``DONE`` are collected. Callers pass one
+        language at a time: a span list for English is tens of millions of
+        tuples, where a single language fits comfortably.
         """
-        pending: dict[str, dict[str, set[str]]] = {}
+        pending: dict[str, dict[str, list]] = {}
         done: dict[tuple[str, str], bool] = {}
         for _, rows_file in self.iter_rows_files(source_root, languages):
             for row in self.read_rows(rows_file):
@@ -248,7 +291,14 @@ class YODASCleanedBuilder(OWSMBuilder):
                 if key not in done:
                     done[key] = (source_root / "audio" / lang / shard / "DONE").exists()
                 if not done[key]:
-                    pending.setdefault(lang, {}).setdefault(shard, set()).add(stem)
+                    pending.setdefault(lang, {}).setdefault(shard, []).append(
+                        (
+                            row["utt_id"],
+                            stem,
+                            float(row["start_time"]),
+                            float(row["end_time"]),
+                        )
+                    )
         return pending
 
     def prepare_source(self, corpora=None, **_kwargs) -> None:
@@ -281,38 +331,48 @@ class YODASCleanedBuilder(OWSMBuilder):
             allow_patterns=patterns,
         )
 
-        pending = self.pending_shards(dest, languages)
-        tasks = [
-            (
-                self.SOURCE,
-                self.shard_file(lang, shard),
-                audio_root,
-                sorted(stems),
-                str(dest / "audio" / lang / shard),
-                self.EXPECTED_FS,
-                f"{lang}/{shard}",
+        failures: list = []
+        shards = spans = 0
+        for lang in sorted({name for name, _ in self.iter_rows_files(dest, languages)}):
+            pending = self.pending_shards(dest, [lang]).get(lang, {})
+            tasks = [
+                (
+                    self.SOURCE,
+                    self.shard_file(lang, shard),
+                    audio_root,
+                    rows,
+                    str(dest / "audio" / lang / shard),
+                    self.EXPECTED_FS,
+                    f"{lang}/{shard}",
+                )
+                for shard, rows in sorted(pending.items())
+            ]
+            if not tasks:
+                continue
+            shards += len(tasks)
+            spans += sum(len(task[3]) for task in tasks)
+            logger.info(
+                "%s/%s: %d shards, %d spans",
+                self.CORPUS,
+                lang,
+                len(tasks),
+                sum(len(task[3]) for task in tasks),
             )
-            for lang in sorted(pending)
-            for shard, stems in sorted(pending[lang].items())
-        ]
-        if not tasks:
+            failures += [
+                (key, error)
+                for key, error in run_parallel(prepare_shard, tasks)
+                if error
+            ]
+
+        if not shards:
             logger.info("%s: every shard is already prepared", self.CORPUS)
             return
-
-        logger.info(
-            "%s: %d shards, %d recordings to transcode",
-            self.CORPUS,
-            len(tasks),
-            sum(len(task[3]) for task in tasks),
-        )
-        failures = [
-            (key, error) for key, error in run_parallel(prepare_shard, tasks) if error
-        ]
+        logger.info("%s: %d shards, %d spans cut", self.CORPUS, shards, spans)
         for key, error in failures[:10]:
             logger.error("%s: %s", key, error)
         if failures:
             raise RuntimeError(
-                f"{len(failures)} of {len(tasks)} shards failed, e.g. "
+                f"{len(failures)} of {shards} shards failed, e.g. "
                 f"{failures[0][0]}: {failures[0][1]}. The shards that "
                 "succeeded are marked DONE, so a rerun resumes."
             )
@@ -363,9 +423,11 @@ class YODASCleanedBuilder(OWSMBuilder):
                     continue
                 yield {
                     "utt_id": row["utt_id"],
-                    "wav_path": str(audio_dir / f"{stem}.opus"),
-                    "start_time": row["start_time"],
-                    "end_time": row["end_time"],
+                    # The file is the span, so the offsets are not the
+                    # metadata's: they are 0 and the span's own length.
+                    "wav_path": str(audio_dir / f"{row['utt_id']}.opus"),
+                    "start_time": 0.0,
+                    "end_time": float(row["end_time"]) - float(row["start_time"]),
                     "lang": row["lang"].strip("<>"),
                     "task": self.TASK,
                     "tgt_lang": "",
