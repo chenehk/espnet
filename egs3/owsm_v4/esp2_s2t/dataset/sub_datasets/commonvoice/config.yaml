@@ -12,6 +12,14 @@ splits:
 
 builder:
   source_env_var: COMMONVOICE
+  # Mozilla distributes each language from a signed URL that cannot be
+  # scripted, and emptied mozilla-foundation/common_voice_13_0 in October
+  # 2025 when the corpus moved to the Mozilla Data Collective. The repo
+  # still resolves and still serves a README, so a fetch from it succeeds
+  # and yields no corpus; this mirror holds the release archives instead.
+  hf_dataset: espnet/common_voice_13_0_mirror
+  # Both the archive name stem and the directory each archive unpacks to.
+  release: cv-corpus-13.0-2023-03-09
   # Fixed by the published OWSM data, not a knob: upstream's
   # egs2/owsm_v3/s2t1/local/cv-iso-693-3.txt, which the utterance ids encode.
   # It is not derivable from dataset/utils.py's ISO table -- it resolves CV's

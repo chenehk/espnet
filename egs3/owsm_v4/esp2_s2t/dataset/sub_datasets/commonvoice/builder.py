@@ -86,7 +86,8 @@ def _probe_chunk(task):
 
 logger = logging.getLogger(__name__)
 
-HF_DATASET = "mozilla-foundation/common_voice_13_0"
+HF_DATASET = str(_CONFIG["builder"]["hf_dataset"])
+RELEASE = str(_CONFIG["builder"]["release"])
 
 
 class CommonVoiceBuilder(OWSMBuilder):
@@ -94,13 +95,26 @@ class CommonVoiceBuilder(OWSMBuilder):
 
     CORPUS = "commonvoice"
 
-    def prepare_source(self, corpora=None, **_kwargs) -> None:
-        """Use the corpus where it already is, else fetch it from the Hub.
+    def corpus_root(self, candidate: Path) -> Path:
+        """Return the directory holding ``<lang>/validated.tsv``.
 
-        Common Voice is distributed as one archive per language from a signed
-        URL that cannot be scripted, so a machine that already holds a release
-        should use it. The Hub mirror is the fallback: free, but gated behind
-        accepting the terms once and a token in the environment.
+        An archive unpacks to ``<release>/<lang>/``, so a tree built by
+        ``prepare_source`` carries one level the reader does not want. Both
+        that tree and a release directory pointed at directly are accepted.
+        """
+        nested = candidate / RELEASE
+        if any((nested / lang).is_dir() for lang in LANGUAGE_MAP):
+            return nested
+        return candidate
+
+    def prepare_source(self, corpora=None, **_kwargs) -> None:
+        """Use the corpus where it already is, else unpack it from the mirror.
+
+        Mozilla serves each language from a signed URL that cannot be
+        scripted, so a machine that already holds a release should use it.
+        The fallback is a mirror of the release archives, one per language,
+        which are unpacked here and then deleted: the reader wants the
+        extracted tsv tree, and keeping both would double 585 GB.
         """
         from egs3.owsm_v4.esp2_s2t.dataset import download
 
@@ -109,50 +123,66 @@ class CommonVoiceBuilder(OWSMBuilder):
             logger.info("%s already holds Common Voice", dest)
             return
 
-        repo = str(self.corpus_options(corpora).get("hf_dataset") or HF_DATASET)
-        languages = self.corpus_options(corpora).get("languages")
-        patterns = None
-        if languages:
-            # One language is a few GB; the whole release is hundreds.
-            patterns = [f"audio/{lang}/*" for lang in languages]
-            patterns += [f"transcript/{lang}/*" for lang in languages]
-            patterns += ["*.py", "*.json", "*.md", "*.ftl"]
+        options = self.corpus_options(corpora)
+        repo = str(options.get("hf_dataset") or HF_DATASET)
+        wanted = options.get("languages")
+        names = sorted(str(x) for x in wanted) if wanted else sorted(LANGUAGE_MAP)
+        patterns = [
+            f"{RELEASE}-{name}.tar.gz"
+            for name in names
+            if not (dest / f".{RELEASE}-{name}.tar.gz.extracted").is_file()
+        ]
 
-        try:
-            from huggingface_hub import snapshot_download
+        if patterns:
+            try:
+                from huggingface_hub import snapshot_download
 
-            snapshot_download(
-                repo_id=repo,
-                repo_type="dataset",
-                local_dir=str(dest),
-                allow_patterns=patterns,
-            )
-        except Exception as error:
-            raise FileNotFoundError(
-                f"Common Voice is not at {dest} and the Hub copy could not be "
-                f"fetched ({type(error).__name__}: {error}).\n"
-                f"Either point {self.SOURCE_ENV_VAR} at an existing release, "
-                f"or accept the terms at https://huggingface.co/datasets/{repo} "
-                f"and log in (huggingface-cli login, or $HF_TOKEN)."
-            ) from error
+                snapshot_download(
+                    repo_id=repo,
+                    repo_type="dataset",
+                    local_dir=str(dest),
+                    allow_patterns=patterns,
+                )
+            except Exception as error:
+                raise FileNotFoundError(
+                    f"Common Voice is not at {dest} and the mirror could not "
+                    f"be fetched ({type(error).__name__}: {error}).\n"
+                    f"Either point {self.SOURCE_ENV_VAR} at an existing "
+                    f"release, or get access to "
+                    f"https://huggingface.co/datasets/{repo} and log in "
+                    "(huggingface-cli login, or $HF_TOKEN)."
+                ) from error
+
+            if not any(dest.glob(f"{RELEASE}-*.tar.gz")):
+                raise FileNotFoundError(
+                    f"{repo} served no {RELEASE}-*.tar.gz for {len(patterns)} "
+                    f"requested languages. Check the codes against the "
+                    "repository's file list."
+                )
+
+        for archive in sorted(dest.glob(f"{RELEASE}-*.tar.gz")):
+            download.extract(archive, dest)
+            archive.unlink()
 
         download.require(dest, f"Common Voice download left nothing in {dest}")
 
     def is_valid_source_root(self, candidate: Path) -> bool:
         """Expect at least one mapped language directory with a validated.tsv."""
+        root = self.corpus_root(candidate)
         return any(
-            (candidate / lang / "validated.tsv").is_file() for lang in LANGUAGE_MAP
+            (root / lang / "validated.tsv").is_file() for lang in LANGUAGE_MAP
         )
 
     def languages(self, source_root: Path, languages: Iterable[str] | None) -> list:
         """Return the language directories to build, in a stable order."""
+        root = self.corpus_root(source_root)
         wanted = (
             sorted(str(x) for x in languages) if languages else sorted(LANGUAGE_MAP)
         )
         return [
             lang
             for lang in wanted
-            if lang in LANGUAGE_MAP and (source_root / lang / "validated.tsv").is_file()
+            if lang in LANGUAGE_MAP and (root / lang / "validated.tsv").is_file()
         ]
 
     def split_rows(self, lang_dir: Path, split: str, held_out=None) -> list:
@@ -206,9 +236,10 @@ class CommonVoiceBuilder(OWSMBuilder):
         size = BATCH_SIZE if batch_size is None else batch_size
         count = 0
 
-        for lang in self.languages(source_root, languages):
+        root = self.corpus_root(source_root)
+        for lang in self.languages(root, languages):
             iso = LANGUAGE_MAP[lang]
-            lang_dir = source_root / lang
+            lang_dir = root / lang
             clips = lang_dir / "clips"
             batch: list = []
 
