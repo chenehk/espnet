@@ -1,0 +1,424 @@
+##########################################################
+#   owsm_v5_small
+##########################################################
+# The licence-free OWSM v4 corpora plus cleaned YODAS2 and cleaned YODAS v3.
+#
+#   . ./path.sh
+#   python run.py --stages create_dataset --training_config conf/owsm_v5_small.yaml
+#   python run.py --stages train_tokenizer,collect_stats,train \
+#       --training_config conf/owsm_v5_small.yaml
+#
+# Model shape is train_conv2d8_size768_e9_d9_mel128.yaml
+# ported to espnet3: 768 wide, 9 encoder and 9 decoder blocks,
+# about ~369M parameters. The size names follow OWSM v3.1 (base 101M,
+# small 367M, medium 1.02B); note the owsm-dump-training exp directories use
+# older labels in which this size may be called something else.
+#
+# espnet3 has no S2T task, so `task` is espnet2's: it builds the model while
+# espnet3 owns the data pipeline and the training loop.
+
+task: espnet2.tasks.s2t.S2TTask
+
+##########################################################
+#                  SYSTEM AND PATH SETTING               #
+##########################################################
+# Global batch is per-rank batch_size x num_device x accumulate_grad_batches
+# = 20 x 2 x 8 = 320, which is what the published recipe trains with.
+# TO CHANGE THE GPU COUNT, SCALE accumulate_grad_batches, NOT batch_size:
+# per-rank 20 is what the reference runs used, and the schedule below assumes
+# 10,000 optimizer steps per epoch.
+num_device: 2
+num_nodes: 1
+
+recipe_dir: .
+data_dir: ${recipe_dir}/data
+exp_tag: owsm_v5_small
+exp_dir: ${recipe_dir}/exp/${exp_tag}
+stats_dir: ${recipe_dir}/exp/stats_owsm_v5_small
+
+cache:
+  cache_dir: ${oc.env:OWSM_CACHE,${recipe_dir}/data/hf}
+
+##########################################################
+#                 DATASET CREATION SETTING               #
+##########################################################
+# Each corpus is found at its environment variable, or under download/ as a
+# fallback. path.sh documents the variables. The cleaned-YODAS corpora are the
+# exception: they fetch their own metadata from the Hub and then transcode the
+# audio they reference, so their directory is a destination, not a prerequisite.
+create_dataset:
+  corpora:
+    aishell_1:
+      source_dir: ${oc.env:AISHELL,${recipe_dir}/download/aishell_1}
+    ami:
+      source_dir: ${oc.env:AMI,${recipe_dir}/download/ami}
+    commonvoice:
+      source_dir: ${oc.env:COMMONVOICE,${recipe_dir}/download/commonvoice}
+    covost2:
+      source_dir: ${oc.env:COVOST2,${recipe_dir}/download/covost2}
+    fleurs:
+      source_dir: ${oc.env:FLEURS,${recipe_dir}/download/fleurs}
+    librispeech:
+      source_dir: ${oc.env:LIBRISPEECH,${recipe_dir}/download/librispeech}
+    mls:
+      source_dir: ${oc.env:MLS,${recipe_dir}/download/mls}
+      # The recordings OWSM cuts spans from. prepare_source rebuilds them
+      # from MLS's own utterances; this is a destination, not a prerequisite.
+      long_audio_dir: ${oc.env:MLS_LONG_AUDIO,${recipe_dir}/download/mls_long_audio}
+    vctk:
+      source_dir: ${oc.env:VCTK,${recipe_dir}/download/vctk}
+    voxpopuli:
+      source_dir: ${oc.env:VOXPOPULI,${recipe_dir}/download/voxpopuli}
+    yodas2_cleaned:
+      source_dir: ${oc.env:YODAS2_CLEANED,${recipe_dir}/download/yodas2_cleaned}
+    yodas3_cleaned:
+      source_dir: ${oc.env:YODAS3_CLEANED,${recipe_dir}/download/yodas3_cleaned}
+
+##########################################################
+#                    DATASET DEFINITION                  #
+##########################################################
+# Entries are POSITIONAL: append, never reorder, or every shape key after the
+# change is invalidated.
+dataset:
+  train:
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.aishell_1
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.ami
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.commonvoice
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.covost2
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.fleurs
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.librispeech
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.mls
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.vctk
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.voxpopuli
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.yodas2_cleaned
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.yodas3_cleaned
+      data_src_args:
+        split: train
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+  valid:
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.aishell_1
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.ami
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.commonvoice
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.covost2
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.fleurs
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.librispeech
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.mls
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.vctk
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+    - data_src: egs3.owsm_v4.esp2_s2t.dataset.sub_datasets.voxpopuli
+      data_src_args:
+        split: dev
+        recipe_dir: ${recipe_dir}
+        cache: ${cache}
+
+# S2TPreprocessor turns the cached strings into token ids and pads speech to a
+# fixed 30 s window. text_prev_apply_prob and time_apply_prob are the
+# augmentation OWSM trains with, not a filter. DataOrganizer instantiates this
+# twice and forces train=false on the valid copy, so validation sees none of it.
+  preprocessor:
+    _target_: espnet2.train.preprocessor.S2TPreprocessor
+    train: true
+    token_type: bpe
+    token_list: ${tokenizer.save_path}/tokens.txt
+    bpemodel: ${tokenizer.save_path}/${tokenizer.model_type}.model
+    non_linguistic_symbols: null
+    text_prev_name: text_prev
+    text_ctc_name: text_ctc
+    fs: 16000
+    na_symbol: "<na>"
+    speech_length: 30
+    speech_resolution: 0.02
+    speech_init_silence: 30
+    text_prev_apply_prob: 0.5
+    time_apply_prob: 0.5
+    notime_symbol: "<notimestamps>"
+    first_time_symbol: "<0.00>"
+    last_time_symbol: "<30.00>"
+
+##########################################################
+#                       TOKENIZER                        #
+##########################################################
+# One shared vocabulary over the whole mixture. nbpe follows egs2/owsm_v3.
+tokenizer:
+  vocab_size: 50000
+  model_type: bpe
+  save_path: ${data_dir}/bpe_50000
+  train_file: ${data_dir}/train_tokenizer/train.txt
+  nlsyms:
+    _target_: egs3.owsm_v4.esp2_s2t.dataset.utils.nlsyms
+  sample_size: null
+  sample_seed: 0
+  text_builder:
+    _target_: egs3.owsm_v4.esp2_s2t.dataset.dataset.iter_text
+    recipe_dir: ${recipe_dir}
+    cache: ${cache}
+    entries:
+      - {corpus: aishell_1, split: train}
+      - {corpus: ami, split: train}
+      - {corpus: commonvoice, split: train}
+      - {corpus: covost2, split: train}
+      - {corpus: fleurs, split: train}
+      - {corpus: librispeech, split: train}
+      - {corpus: mls, split: train}
+      - {corpus: vctk, split: train}
+      - {corpus: voxpopuli, split: train}
+      - {corpus: yodas2_cleaned, split: train}
+      - {corpus: yodas3_cleaned, split: train}
+
+##########################################################
+#                       DATALOADER                       #
+##########################################################
+# batch_size is PER RANK in espnet3, unlike espnet2 where it is the global
+# total. multiprocessing_context must be spawn: forked workers die with
+# "CUDA error: initialization error", and because the loaders reload per epoch
+# a fork failure surfaces at the first epoch boundary, not at startup.
+dataloader:
+  collate_fn:
+    _target_: espnet2.train.collate_fn.CommonCollateFn
+    int_pad_value: -1
+  train:
+    iter_factory:
+    batch_size: 20
+    shuffle: true
+    num_workers: 8
+    multiprocessing_context: spawn
+    pin_memory: true
+    prefetch_factor: 2
+  valid:
+    iter_factory:
+    batch_size: 20
+    shuffle: false
+    num_workers: 4
+    multiprocessing_context: spawn
+    pin_memory: true
+    prefetch_factor: 2
+
+parallel:
+  env: local
+  # Governs every run_parallel call site and overrides the per-corpus
+  # `workers` in the sub-dataset configs, so 1 here makes the CommonVoice
+  # duration probe and the MLS long-audio rebuild serial. 128 is a whole
+  # Delta cpu node; the reads are Lustre-bound and scale past core count.
+  n_workers: 128
+
+##########################################################
+#                 OPTIMIZER AND SCHEDULER                #
+##########################################################
+# [DEVIATION] The published config sets 5.0e-04. The training
+# stream ran both to a matched budget (700,000 and 709,002 steps)
+# and 1.0e-03 won 6 of 8 MLS languages, including all five largest
+# test sets (en 7.4 vs 7.6, es 6.8 vs 6.9, fr 9.7 vs 10.0,
+# de 9.8 vs 10.1, nl 15.2 vs 15.8, pt 11.5 vs 12.8). Reported by
+# the owsm-dump-training session, 2026-11-22; not re-measured here.
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 1.0e-03
+  betas: [0.9, 0.98]
+  eps: 1.0e-06
+  weight_decay: 0.0
+  # egs2 sets fused: true. Lightning cannot clip gradients on a fused optimizer
+  # under AMP, and the clip matters more than the speed.
+  fused: false
+
+# warmup_lr_list matches the published config; all three sizes share the same
+# midpoint (5.0e-05 at step 30,000) and differ only in the peak.
+scheduler:
+  _target_: espnet2.schedulers.piecewise_linear_warmup_lr.PiecewiseLinearWarmupLR
+  warmup_steps_list: [0, 30000, 60000]
+  warmup_lr_list: [0., 5.0e-05, 1.0e-03]
+
+best_model_criterion:
+  - - valid/loss
+    - 5
+    - min
+
+nbest_averaging_interval: 25
+
+##########################################################
+#                    LIGHTNING TRAINER                   #
+##########################################################
+# No wandb logger here on purpose: it needs an API key in the environment and
+# would abort a run on a machine that has none. Add one locally if wanted.
+trainer:
+  accelerator: auto
+  devices: ${num_device}
+  num_nodes: ${num_nodes}
+  accumulate_grad_batches: 8
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 200
+  max_epochs: 70
+  # MICRO-batches. Scale with accumulate_grad_batches to keep 10,000 optimizer
+  # steps per epoch, or the warmup schedule stretches against the data.
+  limit_train_batches: 80000
+  precision: bf16-mixed
+  # egs2: grad_clip 5.0, grad_clip_type 2.0 (L2). The template default is 1.0,
+  # which would silently replace the reference value.
+  gradient_clip_val: 5.0
+  gradient_clip_algorithm: norm
+  callbacks:
+    - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+      dirpath: ${exp_dir}
+      filename: periodic_step{step}
+      auto_insert_metric_name: false
+      every_n_train_steps: 1000
+      save_top_k: 1
+      save_last: link
+      save_weights_only: false
+
+##########################################################
+#                         MODEL                          #
+##########################################################
+# Lifted from egs2/owsm_v4/s2t1/conf/train_conv2d8_size768_e9_d9_mel128.yaml
+model:
+  # No vocab_size: S2TTask takes it from the token list, which is
+  # tokenizer.vocab_size + 2 once <sos>, <eos> and <sop> are appended and the
+  # three SentencePiece control pieces dropped.
+  token_list: ${tokenizer.save_path}/tokens.txt
+
+  frontend: default
+  frontend_conf:
+    n_fft: 512
+    win_length: 400
+    hop_length: 160
+    n_mels: 128
+
+  normalize: global_mvn
+  normalize_conf:
+    stats_file: ${stats_dir}/train/feats_stats.npz
+
+  # Mask counts scale with model size in the published recipe; these are this
+  # size's own, not another's.
+  specaug: specaug
+  specaug_conf:
+    apply_time_warp: false
+    time_warp_window: 5
+    time_warp_mode: bicubic
+    apply_freq_mask: true
+    freq_mask_width_range: [0, 27]
+    num_freq_mask: 2
+    apply_time_mask: true
+    time_mask_width_ratio_range: [0., 0.05]
+    num_time_mask: 4
+
+  encoder: e_branchformer
+  encoder_conf:
+    output_size: 768
+    attention_heads: 12
+    attention_layer_type: selfattn
+    pos_enc_layer_type: abs_pos
+    rel_pos_type: latest
+    cgmlp_linear_units: 3072
+    cgmlp_conv_kernel: 31
+    use_linear_after_conv: false
+    gate_activation: identity
+    num_blocks: 9
+    dropout_rate: 0.1
+    positional_dropout_rate: 0.1
+    attention_dropout_rate: 0.0
+    input_layer: conv2d8
+    layer_drop_rate: 0.0
+    linear_units: 3072
+    positionwise_layer_type: linear
+    use_ffn: true
+    macaron_ffn: true
+    merge_conv_kernel: 31
+    # ESPnet falls back silently when the import fails, so check the log
+    # rather than this flag.
+    use_flash_attn: true
+    gradient_checkpoint_layers: [0]
+
+  decoder: transformer
+  decoder_conf:
+    attention_heads: 12
+    linear_units: 3072
+    num_blocks: 9
+    dropout_rate: 0.1
+    positional_dropout_rate: 0.1
+    self_attention_dropout_rate: 0.0
+    src_attention_dropout_rate: 0.0
+    use_flash_attn: true
+
+  model_conf:
+    ctc_weight: 0.3
+    lsm_weight: 0.1
+    length_normalized_loss: false
+    sym_na: "<na>"
+    # SentencePiece word boundary. espnet2's "<space>" default is absent from
+    # this vocabulary, which silently turns valid/wer into a sentence error
+    # rate.
+    sym_space: "\u2581"
+
+fit:
+  ckpt_path: last
