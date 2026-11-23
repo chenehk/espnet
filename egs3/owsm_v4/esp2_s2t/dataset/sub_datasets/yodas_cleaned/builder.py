@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from egs3.owsm_v4.esp2_s2t.dataset.builder import OWSMBuilder
-from egs3.owsm_v4.esp2_s2t.dataset.utils import sub_dataset_config
+from egs3.owsm_v4.esp2_s2t.dataset.utils import run_parallel, sub_dataset_config
 
 #: Where each source's audio lives. espnet/yodas3 was renamed to
 #: espnet/yodas3.1 and now 307-redirects there; the canonical id is used so a
@@ -55,19 +55,126 @@ def split_wav_path(wav_path: str) -> tuple[str, str, str]:
     return lang, shard, stem
 
 
+def transcode(archive: Path, stems: set[str], audio_dir: Path, fs: int) -> None:
+    """Extract the named recordings and write them as 16 kHz mono Opus.
+
+    YODAS v3 ships each recording's subtitles as a ``.json`` beside it
+    under the same stem, so the member's suffix decides, not its stem.
+    """
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    ffmpeg = ffmpeg_binary()
+    written = set()
+    with tarfile.open(archive) as bundle:
+        for member in bundle:
+            stem = Path(member.name).stem
+            if not member.isfile() or stem not in stems:
+                continue
+            if member.name.endswith(".json"):
+                continue
+            written.add(stem)
+            target = audio_dir / f"{stem}.opus"
+            if target.is_file():
+                continue
+            source = bundle.extractfile(member)
+            if source is None:
+                continue
+            with tempfile.NamedTemporaryFile(
+                dir=audio_dir, suffix=Path(member.name).suffix
+            ) as raw:
+                shutil.copyfileobj(source, raw)
+                raw.flush()
+                partial = target.with_suffix(".opus.tmp")
+                result = subprocess.run(
+                    [ffmpeg, "-nostdin", "-y", "-i", raw.name,
+                     "-ac", "1", "-ar", str(fs),
+                     "-c:a", "libopus", "-b:a", "28k",
+                     # The muxer cannot be guessed from the .tmp the write
+                     # is staged through.
+                     "-f", "opus", str(partial)],
+                    capture_output=True,
+                )
+            if result.returncode != 0:
+                partial.unlink(missing_ok=True)
+                tail = result.stderr.decode(errors="replace")[-300:]
+                raise RuntimeError(f"ffmpeg failed on {member.name}: {tail}")
+            os.replace(partial, target)
+    missing = sorted(stems - written)
+    if missing:
+        raise RuntimeError(
+            f"{archive} has no audio for {len(missing)} recording(s) the "
+            f"metadata names, e.g. {missing[:3]}"
+        )
+
+
+def shard_archive(source: str, name: str, audio_root=None) -> Path:
+    """Return a local copy of one shard's archive, fetching it if needed.
+
+    ``audio_root`` is a local mirror of the audio repository laid out the way
+    the Hub lays it out, so a cluster that already holds the corpus does not
+    download it again. The upstream YODAS2 corpus on disk is exactly this
+    shape. A mirror that is set but incomplete raises rather than quietly
+    falling back, because the fallback is terabytes.
+    """
+    from huggingface_hub import hf_hub_download
+
+    if audio_root:
+        local = Path(audio_root) / name
+        if local.is_file():
+            return local
+        raise FileNotFoundError(
+            f"{source} audio root {audio_root} has no {name}. "
+            "Unset it to fetch from the Hub instead."
+        )
+    return Path(
+        hf_hub_download(
+            repo_id=AUDIO_REPO[source], repo_type="dataset", filename=name
+        )
+    )
+
+
+def prepare_shard(task) -> tuple:
+    """Transcode one shard's recordings and mark it done.
+
+    Returns ``(key, error)``; a task that raises returns its message rather
+    than propagating, so one unreadable shard out of forty thousand does not
+    abandon the rest. ``run_parallel`` pickles this, so it stays module-level
+    and single-argument.
+    """
+    source, name, audio_root, stems, audio_dir, fs, key = task
+    audio_dir = Path(audio_dir)
+    try:
+        archive = shard_archive(source, name, audio_root)
+        transcode(archive, set(stems), audio_dir, fs)
+    except Exception as error:
+        return key, f"{type(error).__name__}: {error}"
+    (audio_dir / "DONE").touch()
+    return key, None
+
+
 def ffmpeg_binary() -> str:
     """Return an ffmpeg to transcode with.
 
     The cluster module fails to load on some GPU nodes, so the static build
     that comes with imageio-ffmpeg is preferred where it is installed; it is
-    equivalent to rounding on this audio.
+    equivalent to rounding on this audio. ``$FFMPEG`` overrides both.
     """
+    override = os.environ.get("FFMPEG")
+    if override:
+        return override
     try:
         import imageio_ffmpeg
 
         return imageio_ffmpeg.get_ffmpeg_exe()
     except ImportError:
-        return shutil.which("ffmpeg") or "ffmpeg"
+        pass
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    raise FileNotFoundError(
+        "No ffmpeg: neither $FFMPEG, nor imageio-ffmpeg (pip install "
+        "imageio-ffmpeg), nor one on PATH. Delta's login and compute nodes "
+        "ship none, so this is the usual state of a fresh environment."
+    )
 
 
 class YODASCleanedBuilder(OWSMBuilder):
@@ -151,11 +258,14 @@ class YODASCleanedBuilder(OWSMBuilder):
         transcoded, so a job killed at its walltime resumes rather than
         restarts.
         """
-        from huggingface_hub import hf_hub_download, snapshot_download
+        from huggingface_hub import snapshot_download
 
         options = self.corpus_options(corpora)
         dest = self.source_destination(corpora)
         languages = options.get("languages")
+        audio_root = options.get("audio_root") or os.environ.get(
+            f"{self.SOURCE.upper()}_AUDIO"
+        )
 
         prefix = f"{self.ROWS_DIR}/" if self.ROWS_DIR else ""
         patterns = (
@@ -172,17 +282,40 @@ class YODASCleanedBuilder(OWSMBuilder):
         )
 
         pending = self.pending_shards(dest, languages)
-        for lang in sorted(pending):
-            for shard, stems in sorted(pending[lang].items()):
-                audio_dir = dest / "audio" / lang / shard
-                logger.info("%s/%s: %d recordings", lang, shard, len(stems))
-                archive = hf_hub_download(
-                    repo_id=AUDIO_REPO[self.SOURCE],
-                    repo_type="dataset",
-                    filename=self.shard_file(lang, shard),
-                )
-                self.transcode(Path(archive), stems, audio_dir)
-                (audio_dir / "DONE").touch()
+        tasks = [
+            (
+                self.SOURCE,
+                self.shard_file(lang, shard),
+                audio_root,
+                sorted(stems),
+                str(dest / "audio" / lang / shard),
+                self.EXPECTED_FS,
+                f"{lang}/{shard}",
+            )
+            for lang in sorted(pending)
+            for shard, stems in sorted(pending[lang].items())
+        ]
+        if not tasks:
+            logger.info("%s: every shard is already prepared", self.CORPUS)
+            return
+
+        logger.info(
+            "%s: %d shards, %d recordings to transcode",
+            self.CORPUS,
+            len(tasks),
+            sum(len(task[3]) for task in tasks),
+        )
+        failures = [
+            (key, error) for key, error in run_parallel(prepare_shard, tasks) if error
+        ]
+        for key, error in failures[:10]:
+            logger.error("%s: %s", key, error)
+        if failures:
+            raise RuntimeError(
+                f"{len(failures)} of {len(tasks)} shards failed, e.g. "
+                f"{failures[0][0]}: {failures[0][1]}. The shards that "
+                "succeeded are marked DONE, so a rerun resumes."
+            )
 
     @staticmethod
     def read_rows(rows_file: Path) -> Iterator[dict]:
@@ -190,56 +323,6 @@ class YODASCleanedBuilder(OWSMBuilder):
         with gzip.open(rows_file, "rt", encoding="utf-8") as stream:
             for line in stream:
                 yield json.loads(line)
-
-    def transcode(self, archive: Path, stems: set[str], audio_dir: Path) -> None:
-        """Extract the named recordings and write them as 16 kHz mono Opus.
-
-        YODAS v3 ships each recording's subtitles as a ``.json`` beside it
-        under the same stem, so the member's suffix decides, not its stem.
-        """
-        audio_dir.mkdir(parents=True, exist_ok=True)
-        ffmpeg = ffmpeg_binary()
-        written = set()
-        with tarfile.open(archive) as bundle:
-            for member in bundle:
-                stem = Path(member.name).stem
-                if not member.isfile() or stem not in stems:
-                    continue
-                if member.name.endswith(".json"):
-                    continue
-                written.add(stem)
-                target = audio_dir / f"{stem}.opus"
-                if target.is_file():
-                    continue
-                source = bundle.extractfile(member)
-                if source is None:
-                    continue
-                with tempfile.NamedTemporaryFile(
-                    dir=audio_dir, suffix=Path(member.name).suffix
-                ) as raw:
-                    shutil.copyfileobj(source, raw)
-                    raw.flush()
-                    partial = target.with_suffix(".opus.tmp")
-                    result = subprocess.run(
-                        [ffmpeg, "-nostdin", "-y", "-i", raw.name,
-                         "-ac", "1", "-ar", str(self.EXPECTED_FS),
-                         "-c:a", "libopus", "-b:a", "28k",
-                         # The muxer cannot be guessed from the .tmp the write
-                         # is staged through.
-                         "-f", "opus", str(partial)],
-                        capture_output=True,
-                    )
-                if result.returncode != 0:
-                    partial.unlink(missing_ok=True)
-                    tail = result.stderr.decode(errors="replace")[-300:]
-                    raise RuntimeError(f"ffmpeg failed on {member.name}: {tail}")
-                os.replace(partial, target)
-        missing = sorted(stems - written)
-        if missing:
-            raise RuntimeError(
-                f"{archive} has no audio for {len(missing)} recording(s) the "
-                f"metadata names, e.g. {missing[:3]}"
-            )
 
     def iter_rows(
         self,
