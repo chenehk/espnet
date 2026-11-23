@@ -23,10 +23,15 @@ builder:
   # contiguously -- 0 of 8.6M spans contains a gap -- so laying the utterances
   # on a silent timeline at their own offsets reproduces the recording wherever
   # a span can fall. Measured against MLS's own audio at correlation 1.00000.
-  # submit/build_mls_audio_long.sh writes them; they are 16 kHz mono PCM_16
-  # flac rather than mp3, which the read path handles either way.
+  # prepare_source writes them, so the recipe needs no external script; they
+  # are 16 kHz mono PCM_16 flac rather than mp3, which the read path handles
+  # either way. Rebuilding English is 180k recordings, so set a real
+  # `parallel` block in the training config before running create_dataset.
   long_audio_env_var: MLS_LONG_AUDIO
   long_audio_suffix: .flac
+  # What the shipped per-utterance audio already is, and what
+  # `ffmpeg -ac 1 -ar 16000 -sample_fmt s16` gives from the LibriVox mp3.
+  long_audio_rate: 16000
 
   # How a span finds its recording. `stem` is the mp3 basename, which is what
   # upstream names the download by and what the dump's utterance ids carry --
