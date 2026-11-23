@@ -296,8 +296,8 @@ class MLSBuilder(OWSMBuilder):
         root = Path(long_audio_dir or os.environ.get(LONG_AUDIO_ENV_VAR, ""))
         if not root.is_dir():
             raise RuntimeError(
-                f"{LONG_AUDIO_ENV_VAR} is not a directory: {root!r}. The long "
-                "audio is built by submit/build_mls_audio_long.sh; see the "
+                f"{LONG_AUDIO_ENV_VAR} is not a directory: {root!r}. "
+                "prepare_source writes the long audio there; see the "
                 "sub-dataset's config.yaml."
             )
         count = 0
