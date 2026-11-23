@@ -74,28 +74,61 @@ class LibriSpeechBuilder(OWSMBuilder):
         nested = source_root / "LibriSpeech"
         return nested if (nested / "dev-clean").is_dir() else source_root
 
-    def mp3_root(self, mp3_dir: str | None) -> Path:
-        """Return the directory holding ``mp3/<speaker>/<chapter>/``."""
+    def mp3_root(self, source_root: Path, mp3_dir: str | None = None) -> Path:
+        """Return the directory holding ``mp3/<speaker>/<chapter>/``.
+
+        ``original-mp3.tar.gz`` unpacks beside the flac release's split
+        directories, so the corpus root is the last candidate rather than an
+        error: a machine that downloaded both has them in one tree.
+        """
         import os
 
-        root = Path(mp3_dir or os.environ.get(MP3_ENV_VAR, ""))
-        nested = root / "LibriSpeech"
-        if (nested / MP3_SUBDIR).is_dir():
-            return nested / MP3_SUBDIR
-        return root / MP3_SUBDIR
+        for candidate in (mp3_dir, os.environ.get(MP3_ENV_VAR), source_root):
+            if not candidate:
+                continue
+            root = Path(candidate)
+            nested = root / "LibriSpeech"
+            if (nested / MP3_SUBDIR).is_dir():
+                return nested / MP3_SUBDIR
+            if (root / MP3_SUBDIR).is_dir():
+                return root / MP3_SUBDIR
+        return Path(source_root) / MP3_SUBDIR
+
+    def mp3_destination(self, corpora=None) -> Path:
+        """Where the original-mp3 release should be downloaded to."""
+        import os
+
+        configured = self.corpus_options(corpora).get("mp3_dir") or os.environ.get(
+            MP3_ENV_VAR
+        )
+        return Path(configured) if configured else self.source_destination(corpora)
 
     def prepare_source(self, corpora=None, **_kwargs) -> None:
-        """Download LibriSpeech's original-mp3 release from OpenSLR (82 GiB).
+        """Download both LibriSpeech releases from OpenSLR (about 140 GiB).
 
-        Not the flac release: OWSM cuts 30 s spans along a chapter timeline,
-        and only this archive carries the chapter audio and the sentence
-        offsets the spans are cut at.
+        The flac release says which speakers are in which split; only
+        ``original-mp3`` carries the chapter audio and the sentence offsets
+        OWSM cuts its 30 s spans at. Neither alone is enough, and both unpack
+        into a shared ``LibriSpeech/`` directory.
         """
         from egs3.owsm_v4.esp2_s2t.dataset import download
 
         dest = self.source_destination(corpora)
-        download.fetch_and_extract(f"{OPENSLR}/12/original-mp3.tar.gz", dest)
+        for names in SPLIT_SOURCES.values():
+            for name in names:
+                download.fetch_and_extract(f"{OPENSLR}/12/{name}.tar.gz", dest)
+        download.fetch_and_extract(
+            f"{OPENSLR}/12/original-mp3.tar.gz", self.mp3_destination(corpora)
+        )
         download.require(dest, f"LibriSpeech download left nothing in {dest}")
+
+    def is_source_prepared(self, corpora=None, **_kwargs) -> bool:
+        """Require the flac split directories *and* the mp3 tree."""
+        if not super().is_source_prepared(corpora=corpora, **_kwargs):
+            return False
+        options = self.corpus_options(corpora)
+        source_root = self.resolve_source_root(options.get("source_dir"))
+        return self.mp3_root(source_root, options.get("mp3_dir")).is_dir()
 
     def is_valid_source_root(self, candidate: Path) -> bool:
         """Expect the flac release's split directories."""
@@ -133,12 +166,12 @@ class LibriSpeechBuilder(OWSMBuilder):
         **_options,
     ) -> Iterator[dict]:
         """Yield cache rows for ``split``, one chapter at a time."""
-        mp3 = self.mp3_root(mp3_dir)
+        mp3 = self.mp3_root(source_root, mp3_dir)
         if not mp3.is_dir():
             raise RuntimeError(
-                f"{MP3_ENV_VAR} does not hold a {MP3_SUBDIR}/ tree: {mp3!r}. "
-                "It is the original-mp3 release; see the sub-dataset's "
-                "config.yaml."
+                f"No {MP3_SUBDIR}/ tree at {mp3!r}. It is the original-mp3 "
+                f"release; set {MP3_ENV_VAR} or create_dataset.corpora."
+                "librispeech.mp3_dir, or let prepare_source fetch it."
             )
         count = 0
 

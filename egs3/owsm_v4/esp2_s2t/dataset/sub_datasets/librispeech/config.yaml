@@ -16,6 +16,9 @@ builder:
   # along the chapter timeline, which is why the dump's ids look like
   # LibriSpeech_116_288045_000083490_000094140.
   source_env_var: LIBRISPEECH
+  # Only consulted when the two releases are kept apart. prepare_source
+  # unpacks both into one LibriSpeech/ tree, and mp3_root then falls back to
+  # the corpus root, so this may stay unset.
   mp3_env_var: LIBRISPEECH_MP3
   mp3_subdir: mp3
 
