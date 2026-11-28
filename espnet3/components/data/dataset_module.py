@@ -23,7 +23,7 @@ It supports:
 from __future__ import annotations
 
 import dataclasses
-import inspect
+import functools
 import sys
 from importlib import import_module, util
 from pathlib import Path
@@ -163,59 +163,6 @@ def _locate_data_src(data_src: str) -> Any:
         raise cause from None
 
 
-def resolve_data_src(
-    data_src: str | None = None, recipe_dir: str | Path | None = None
-) -> tuple[ModuleType, Any | None]:
-    """Resolve a dataset source to its module and, if named, its dataset class.
-
-    A dotted ``data_src`` is located with ``hydra.utils.get_object``, so it
-    may name a module or an attribute of one. An error raised while importing
-    a module on the path, such as a missing dependency of the dataset module,
-    propagates unchanged.
-
-    Args:
-        data_src: Dataset source reference. See :func:`load_dataset_module`
-            for the supported forms.
-        recipe_dir: Recipe root directory used for local module loading.
-
-    Returns:
-        ``(module, dataset_cls)``. When ``data_src`` names a module,
-        ``dataset_cls`` is ``None`` and the module's ``Dataset`` attribute is
-        the dataset class. Otherwise ``dataset_cls`` is the named attribute,
-        not yet validated, and ``module`` is the module that holds it.
-
-    Raises:
-        AssertionError: If both ``data_src`` and ``recipe_dir`` are ``None``.
-        ModuleNotFoundError: If a package or module on the path is missing.
-        ImportError: If the last component of ``data_src`` is neither an
-            attribute nor a submodule of its parent.
-
-    Examples:
-        >>> resolve_data_src("egs3.mini_an4.esp2_asr.dataset")[1] is None
-        True
-        >>> module, dataset_cls = resolve_data_src(
-        ...     "egs3.libritts.f5tts.dataset.librispeech_pc.LibriSpeechPCDataset"
-        ... )
-        >>> module.__name__, dataset_cls.__name__
-        ('egs3.libritts.f5tts.dataset.librispeech_pc', 'LibriSpeechPCDataset')
-    """
-    if data_src is None:
-        assert recipe_dir is not None, "recipe_dir must be set when data_src is None."
-
-        # Local recipe mode: load <recipe_dir>/dataset/__init__.py directly.
-        return _load_local_dataset_module(recipe_dir), None
-    if _is_tag(data_src):
-
-        # Tag mode: "mini_an4/esp2_asr" -> "egs3.mini_an4.esp2_asr.dataset"
-        return import_module(resolve_dataset_module_name(data_src)), None
-
-    target = _locate_data_src(data_src)
-    if isinstance(target, ModuleType):
-        return target, None
-    module = sys.modules.get(data_src.rsplit(".", 1)[0]) or inspect.getmodule(target)
-    return module, target
-
-
 def load_dataset_module(
     data_src: str | None = None, recipe_dir: str | Path | None = None
 ):
@@ -228,7 +175,10 @@ def load_dataset_module(
             - module path form: ``egs3.mini_an4.esp2_asr.dataset``.
             - class path form:
               ``egs3.libritts.f5tts.dataset.librispeech_pc.LibriSpeechPCDataset``;
-              the module that defines the class is returned.
+              the module the class path is taken from is returned.
+            A dotted ``data_src`` is located with ``hydra.utils.get_object``.
+            An error raised while importing a module on the path, such as a
+            missing dependency of the dataset module, propagates unchanged.
         recipe_dir: Recipe root directory used for local module loading.
 
     Returns:
@@ -236,9 +186,9 @@ def load_dataset_module(
 
     Raises:
         AssertionError: If both ``data_src`` and ``recipe_dir`` are ``None``.
-        ModuleNotFoundError: If target module cannot be found.
-        ImportError: If import fails for other reasons, or a class path names
-            an attribute its module does not have.
+        ModuleNotFoundError: If a package or module on the path is missing.
+        ImportError: If the last component of ``data_src`` is neither an
+            attribute nor a submodule of its parent.
 
     Notes:
         This function does not instantiate ``Dataset`` or ``DatasetBuilder``.
@@ -248,6 +198,10 @@ def load_dataset_module(
         >>> module = load_dataset_module(data_src="mini_an4/esp2_asr")
         >>> hasattr(module, "DatasetBuilder")
         True
+        >>> load_dataset_module(
+        ...     "egs3.libritts.f5tts.dataset.librispeech_pc.LibriSpeechPCDataset"
+        ... ).__name__
+        'egs3.libritts.f5tts.dataset.librispeech_pc'
         >>> local = load_dataset_module(
         ...     data_src=None, recipe_dir="egs3/mini_an4/esp2_asr"
         ... )
@@ -258,7 +212,25 @@ def load_dataset_module(
         ...
         AssertionError: recipe_dir must be set when data_src is None.
     """
-    return resolve_data_src(data_src=data_src, recipe_dir=recipe_dir)[0]
+    if data_src is None:
+        assert recipe_dir is not None, "recipe_dir must be set when data_src is None."
+
+        # Local recipe mode: load <recipe_dir>/dataset/__init__.py directly.
+        return _load_local_dataset_module(recipe_dir)
+    if _is_tag(data_src):
+
+        # Tag mode: "mini_an4/esp2_asr" -> "egs3.mini_an4.esp2_asr.dataset"
+        return import_module(resolve_dataset_module_name(data_src))
+
+    target = _locate_data_src(data_src)
+    if isinstance(target, ModuleType):
+        return target
+    # get_object has imported the longest module prefix of the path.
+    parts = data_src.split(".")
+    for i in range(len(parts) - 1, 0, -1):
+        module = sys.modules.get(".".join(parts[:i]))
+        if module is not None:
+            return module
 
 
 def parse_dataset_reference_config(
@@ -353,9 +325,12 @@ def instantiate_dataset_reference(
         >>> ds = instantiate_dataset_reference(cfg)
     """
     data_src, data_src_args = parse_dataset_reference_config(config)
-    module, dataset_cls = resolve_data_src(data_src=data_src, recipe_dir=recipe_dir)
-    if dataset_cls is None:
+    module = load_dataset_module(data_src=data_src, recipe_dir=recipe_dir)
+    if data_src is None or _is_tag(data_src) or module.__name__ == data_src:
         dataset_cls = getattr(module, "Dataset")
+    else:
+        attr_path = data_src[len(module.__name__) + 1 :].split(".")
+        dataset_cls = functools.reduce(getattr, attr_path, module)
     if not isinstance(dataset_cls, type):
         raise TypeError(
             f"data_src {data_src!r} names {dataset_cls!r}, which is not a class; "

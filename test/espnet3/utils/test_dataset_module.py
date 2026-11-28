@@ -125,8 +125,8 @@ def test_instantiate_dataset_reference_keeps_explicit_split(monkeypatch):
 
     monkeypatch.setattr(
         dm,
-        "resolve_data_src",
-        lambda data_src=None, recipe_dir=None: (DummyModule(), None),
+        "load_dataset_module",
+        lambda data_src=None, recipe_dir=None: DummyModule(),
     )
     dm.instantiate_dataset_reference(
         {"data_src": "mini_an4/esp2_asr", "data_src_args": {"split": "valid"}},
@@ -225,8 +225,8 @@ def test_instantiate_dataset_reference_passes_only_kwargs_to_dataset(monkeypatch
 
     monkeypatch.setattr(
         dm,
-        "resolve_data_src",
-        lambda data_src=None, recipe_dir=None: (DummyModule(), None),
+        "load_dataset_module",
+        lambda data_src=None, recipe_dir=None: DummyModule(),
     )
     dm.instantiate_dataset_reference(
         {
@@ -320,8 +320,8 @@ def test_instantiate_dataset_reference_rejects_dataset_outside_base(monkeypatch)
 
     monkeypatch.setattr(
         dm,
-        "resolve_data_src",
-        lambda data_src=None, recipe_dir=None: (DummyModule(), None),
+        "load_dataset_module",
+        lambda data_src=None, recipe_dir=None: DummyModule(),
     )
     with pytest.raises(TypeError, match="does not inherit BaseDataset"):
         dm.instantiate_dataset_reference({"data_src_args": {}})
@@ -383,10 +383,9 @@ def test_class_path_ref_loads_defining_module(tmp_path, monkeypatch):
 
 
 def test_class_path_ref_resolves_class_in_repository():
-    module, dataset_cls = dm.resolve_data_src("egs3.mini_an4.esp2_asr.dataset.Dataset")
+    module = dm.load_dataset_module("egs3.mini_an4.esp2_asr.dataset.Dataset")
 
     assert module.__name__ == "egs3.mini_an4.esp2_asr.dataset"
-    assert dataset_cls is module.Dataset
 
 
 def test_module_tag_and_local_refs_still_use_module_dataset(tmp_path, monkeypatch):
@@ -394,12 +393,11 @@ def test_module_tag_and_local_refs_still_use_module_dataset(tmp_path, monkeypatc
     _create_local_recipe_dataset(tmp_path)
 
     module_dataset = dm.instantiate_dataset_reference({"data_src": module_ref})
-    tag_module, tag_cls = dm.resolve_data_src("mini_an4/esp2_asr")
+    tag_module = dm.load_dataset_module("mini_an4/esp2_asr")
     local_dataset = dm.instantiate_dataset_reference({}, recipe_dir=tmp_path)
 
     assert type(module_dataset).__name__ == "Dataset"
     assert tag_module.__name__ == "egs3.mini_an4.esp2_asr.dataset"
-    assert tag_cls is None
     assert local_dataset[0] == {"text": "hi"}
 
 
